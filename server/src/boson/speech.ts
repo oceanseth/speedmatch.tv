@@ -1,0 +1,98 @@
+/**
+ * The TTS request boundary.
+ *
+ * Invariant (Claude-Opus review, 2026-09-18): nothing reaches a TTS `input`
+ * field without passing `stripSpeechControlTokens` AT THE CALL SITE — not
+ * just at profile parse. `users.display_name`, `personas.name`, taglines,
+ * chat messages: every untrusted value an orchestrator line interpolates is
+ * spoken control tokens waiting to happen ("<|sfx:laughter|>" as a display
+ * name plays in every match that user joins).
+ *
+ * `speechLine` is a tagged template that makes the safe path the easy path:
+ * the LITERAL parts are the orchestrator's trusted script and may carry
+ * intentional Boson delivery tags; every INTERPOLATED value is sanitized.
+ *
+ *   const input = speechLine`<|emotion:enthusiasm|>${name} versus ${rival} — ${name}, you're up!`;
+ *   // name = '<|sfx:laughter|>Maya' → input speaks "Maya", tags gone.
+ */
+
+import { stripSpeechControlTokens } from '../onboarding/profile.ts';
+
+declare const speechSafe: unique symbol;
+/**
+ * Branded string: the only values `buildSpeechRequest` accepts. Produced by
+ * `speechLine` (sanitizing template) or `trustedSpeechLiteral` (fixed
+ * strings). A plain string — including a raw template literal interpolating
+ * user data — is a type error at the call site, not a review finding.
+ */
+export type SpeechSafeInput = string & { readonly [speechSafe]: true };
+
+export function speechLine(
+  strings: TemplateStringsArray,
+  ...untrusted: unknown[]
+): SpeechSafeInput {
+  let out = strings[0];
+  for (let i = 0; i < untrusted.length; i++) {
+    out += sanitizeForSpeech(untrusted[i]) + strings[i + 1];
+  }
+  return out as SpeechSafeInput;
+}
+
+/**
+ * Escape hatch for genuinely fixed strings (canned show lines, config
+ * constants). NEVER pass anything computed from user, chat, profile, or
+ * persona data through this — that's what `speechLine` is for.
+ */
+export function trustedSpeechLiteral(literal: string): SpeechSafeInput {
+  return literal as SpeechSafeInput;
+}
+
+/** Sanitize one untrusted value for speech. Non-strings are stringified
+ * first so an object can't smuggle tags through toString(). */
+export function sanitizeForSpeech(value: unknown): string {
+  return stripSpeechControlTokens(String(value ?? ''));
+}
+
+export interface SpeechRequestBody {
+  model: string;
+  input: string;
+  voice: string;
+}
+
+/**
+ * TTS is the spend boundary ($/1K chars): once chat and transcripts get
+ * interpolated into orchestrator lines, an unbounded input is an unbounded
+ * bill. Generous for a game-show line; trim upstream if you hit it.
+ */
+export const SPEECH_INPUT_MAX = 2000;
+
+/** Boson preset voices (see personas.voice in migrations/001_init.sql). */
+const VOICE_PRESETS = new Set(['chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver']);
+/** Registered voices from POST /v1/audio/voices. */
+const REGISTERED_VOICE_RE = /^voice_[A-Za-z0-9_-]+$/;
+
+/**
+ * Build the body for POST https://api.boson.ai/v1/audio/speech.
+ * `input` is brand-enforced (`speechLine` / `trustedSpeechLiteral`) and
+ * length-capped; `voice` is validated here against the preset catalog or the
+ * registered-voice id shape — never client-supplied free text.
+ */
+export function buildSpeechRequest(opts: {
+  input: SpeechSafeInput;
+  voice: string;
+  model?: string;
+}): SpeechRequestBody {
+  if (opts.input.length > SPEECH_INPUT_MAX) {
+    throw new RangeError(
+      `speech input is ${opts.input.length} chars (max ${SPEECH_INPUT_MAX}) — trim interpolated values before speaking`,
+    );
+  }
+  if (!VOICE_PRESETS.has(opts.voice) && !REGISTERED_VOICE_RE.test(opts.voice)) {
+    throw new RangeError('voice is not a preset or registered voice id');
+  }
+  return {
+    model: opts.model ?? 'higgs-tts-3',
+    input: opts.input,
+    voice: opts.voice,
+  };
+}

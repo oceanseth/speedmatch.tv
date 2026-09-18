@@ -20,10 +20,11 @@ skills-lock.json
 # Agent tool state (installed skills, local settings)
 .codex/
 .claude/settings.json
+
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
-/node_modules
+# dependencies (nested too: server/node_modules)
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*

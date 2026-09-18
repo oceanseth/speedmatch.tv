@@ -1,0 +1,22 @@
+{
+  "name": "@speedmatch/server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./tournament": "./src/tournament/machine.ts",
+    "./boson": "./src/boson/tokenBroker.ts",
+    "./speech": "./src/boson/speech.ts",
+    "./config": "./src/config.ts",
+    "./onboarding": "./src/onboarding/profile.ts"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
