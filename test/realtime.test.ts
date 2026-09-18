@@ -138,6 +138,23 @@ test("mid-session expired credentials have a bounded re-mint budget", async t =>
   assert.equal(h.contexts[0].state, "closed");
 });
 
+test("thirty seconds on one healthy socket restores recovery without allowing a failure burst", async t => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const h = harness(t); const client = new RealtimeVoiceSession(); t.after(() => client.close());
+  await client.connect("lobby", h.stream);
+  // Three ten-second sockets must not count as one stable thirty-second run.
+  for (let i = 0; i < 3; i++) { now += 10_000; h.sockets.at(-1)!.serverClose(3000); await tick(); }
+  assert.equal(h.mintCount, 4);
+  now += 30_000;
+  h.sockets.at(-1)!.serverClose(3000); await tick();
+  assert.equal(h.mintCount, 5);
+  assert.equal(h.contexts[0].state, "running");
+  for (let i = 0; i < 3; i++) { h.sockets.at(-1)!.serverClose(3000); await tick(); }
+  assert.equal(h.mintCount, 7);
+  assert.equal(h.contexts[0].state, "closed");
+});
+
 
 test("stopping while a token request is pending cannot open a late socket", async t => {
   const h = harness(t);
