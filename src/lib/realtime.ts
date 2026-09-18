@@ -3,18 +3,24 @@
  *
  * Flow: mint an ephemeral client secret from our token broker
  * (POST /api/realtime/token — BOSON_API_KEY never reaches this client, and
- * the broker enforces owner-only minting), then open a WebSocket to the
- * OpenAI-Realtime-compatible endpoint using the `bai-client-secret.<key>`
- * subprotocol. Mic audio goes up as base64 PCM16@24kHz via
- * `input_audio_buffer.append`; agent audio comes back as PCM16 deltas and
- * is scheduled onto an AudioContext. Server VAD owns turn-taking; a
- * `speech_started` event flushes local playback so the user can barge in.
+ * the broker enforces owner-only minting), then open a WebSocket using the
+ * `wsUrl` and `subprotocols` the broker returns, so endpoint and auth
+ * framing can't drift between the two sides. Mic audio goes up as base64
+ * PCM16@24kHz via `input_audio_buffer.append`; agent audio comes back as
+ * PCM16 deltas and is scheduled onto an AudioContext. Server VAD owns
+ * turn-taking; a `speech_started` event flushes local playback so the user
+ * can barge in. Boson closes an invalid/expired key with code 3000, so on
+ * 3000 we re-mint and reconnect (capped) instead of silently ending the
+ * session. Whether an established session survives its key's expiry is
+ * unverified either way — the reconnect path covers both cases, so don't
+ * remove it on the strength of a TTL assumption.
  */
 
-const REALTIME_URL = "wss://api.boson.ai/v1/realtime?model=higgs-realtime";
 const SAMPLE_RATE = 24_000;
 /** ~100ms of mic audio per append frame. */
 const MIC_FRAME_SAMPLES = 2_400;
+/** Re-mint + reconnect budget for close code 3000 (expired/invalid key). */
+const MAX_RECONNECT_ATTEMPTS = 3;
 
 export type RealtimeStatus =
   | "connecting"
@@ -28,7 +34,16 @@ export interface RealtimeCallbacks {
   onStatus?: (status: RealtimeStatus) => void;
   /** Incremental transcript of what the agent is saying (captions). */
   onCaption?: (delta: string, done: boolean) => void;
+  /** Transcript of what the user said (higgs-stt-3.1 input transcription). */
+  onUserCaption?: (delta: string, done: boolean) => void;
   onError?: (message: string) => void;
+}
+
+/** Contract of POST /api/realtime/token (server/src/boson/tokenBroker.ts). */
+interface MintedSession {
+  clientSecret: string;
+  wsUrl: string;
+  subprotocols: string[];
 }
 
 const WORKLET_SRC = `
@@ -75,6 +90,8 @@ export class RealtimeVoiceSession {
   private playHead = 0;
   private playing = new Set<AudioBufferSourceNode>();
   private closed = false;
+  private tournamentId = "";
+  private reconnectAttempts = 0;
 
   constructor(private cb: RealtimeCallbacks = {}) {}
 
@@ -83,53 +100,23 @@ export class RealtimeVoiceSession {
    * owned by the caller — we tap its audio track, we never stop it.
    */
   async connect(tournamentId: string, micStream: MediaStream): Promise<void> {
+    this.tournamentId = tournamentId;
     this.cb.onStatus?.("connecting");
 
-    const minted = await fetch("/api/realtime/token", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tournamentId }),
-    });
-    if (!minted.ok) throw new Error(`token mint failed (${minted.status})`);
-    const body = await minted.json();
-    // Broker responses may nest the secret (OpenAI-compatible shape) or
-    // return it flat; accept both so the broker stays free to evolve.
-    const secret: unknown =
-      body?.client_secret?.value ?? body?.client_secret ?? body?.value;
-    if (typeof secret !== "string" || secret.length === 0) {
-      throw new Error("mint response had no client secret");
-    }
+    const minted = await this.mint();
 
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-    await this.ctx.audioWorklet.addModule(
-      URL.createObjectURL(new Blob([WORKLET_SRC], { type: "text/javascript" })),
+    const workletUrl = URL.createObjectURL(
+      new Blob([WORKLET_SRC], { type: "text/javascript" }),
     );
+    try {
+      await this.ctx.audioWorklet.addModule(workletUrl);
+    } finally {
+      URL.revokeObjectURL(workletUrl);
+    }
 
-    await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(REALTIME_URL, [
-        "realtime",
-        `bai-client-secret.${secret}`,
-      ]);
-      this.ws = ws;
-      ws.onopen = () => resolve();
-      ws.onerror = () => reject(new Error("realtime socket failed to open"));
-      ws.onclose = () => {
-        if (!this.closed) {
-          this.cb.onStatus?.("closed");
-          this.teardownAudio();
-        }
-      };
-      ws.onmessage = (msg) => this.handleServerEvent(String(msg.data));
-    });
-
-    this.send({
-      type: "session.update",
-      session: {
-        input_audio_format: "pcm16",
-        output_audio_format: "pcm16",
-        turn_detection: { type: "server_vad" },
-      },
-    });
+    await this.openSocket(minted);
+    this.configureSession();
 
     this.micSource = this.ctx.createMediaStreamSource(micStream);
     this.micNode = new AudioWorkletNode(this.ctx, "pcm-capture");
@@ -139,6 +126,102 @@ export class RealtimeVoiceSession {
     this.micSource.connect(this.micNode);
 
     this.cb.onStatus?.("connected");
+  }
+
+  private async mint(): Promise<MintedSession> {
+    // Idempotent; establishes the httpOnly sm_sid session cookie the broker
+    // route requires (401 without it).
+    const session = await fetch("/api/session");
+    if (!session.ok) {
+      throw new Error(`session cookie setup failed (${session.status})`);
+    }
+    const res = await fetch("/api/realtime/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tournamentId: this.tournamentId }),
+    });
+    if (!res.ok) throw new Error(`token mint failed (${res.status})`);
+    const body = (await res.json()) as Partial<MintedSession>;
+    if (typeof body.clientSecret !== "string" || body.clientSecret.length === 0) {
+      throw new Error("mint response had no clientSecret");
+    }
+    if (typeof body.wsUrl !== "string" || body.wsUrl.length === 0) {
+      throw new Error("mint response had no wsUrl");
+    }
+    if (
+      !Array.isArray(body.subprotocols) ||
+      body.subprotocols.length === 0 ||
+      !body.subprotocols.every((s) => typeof s === "string")
+    ) {
+      throw new Error("mint response had no subprotocols");
+    }
+    return {
+      clientSecret: body.clientSecret,
+      wsUrl: body.wsUrl,
+      subprotocols: body.subprotocols,
+    };
+  }
+
+  private openSocket(minted: MintedSession): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(minted.wsUrl, minted.subprotocols);
+      this.ws = ws;
+      ws.onopen = () => {
+        // The connect promise is settled now; rebind so later socket errors
+        // reach onError instead of a no-op reject on a settled promise.
+        ws.onerror = () => this.cb.onError?.("realtime socket error");
+        resolve();
+      };
+      ws.onerror = () => reject(new Error("realtime socket failed to open"));
+      ws.onclose = (evt) => void this.handleSocketClose(evt);
+      ws.onmessage = (msg) => this.handleServerEvent(String(msg.data));
+    });
+  }
+
+  /**
+   * Close code 3000 is Boson's "invalid or expired ephemeral key". Whether
+   * that can also hit an established session at key expiry is unverified —
+   * either way the answer is a fresh mint and a new socket; the audio
+   * pipeline stays up and mic frames simply resume once the socket reopens.
+   */
+  private async handleSocketClose(evt: CloseEvent): Promise<void> {
+    if (this.closed) return;
+    if (evt.code === 3000 && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      this.reconnectAttempts += 1;
+      this.cb.onStatus?.("connecting");
+      try {
+        const minted = await this.mint();
+        if (this.closed) return;
+        await this.openSocket(minted);
+        this.configureSession();
+        this.cb.onStatus?.("connected");
+        return;
+      } catch (err) {
+        this.cb.onError?.(
+          err instanceof Error ? err.message : "reconnect failed",
+        );
+      }
+    }
+    this.cb.onStatus?.("closed");
+    this.teardownAudio();
+  }
+
+  private configureSession() {
+    // Boson's documented (nested) session shape — flat OpenAI-beta names are
+    // ignored by this endpoint. Input transcription is off unless a model is
+    // named, and without it no user-side caption events are emitted.
+    this.send({
+      type: "session.update",
+      session: {
+        output_modalities: ["audio"],
+        audio: {
+          input: {
+            turn_detection: { type: "server_vad" },
+            transcription: { model: "higgs-stt-3.1" },
+          },
+        },
+      },
+    });
   }
 
   private pushMic(chunk: Float32Array) {
@@ -160,7 +243,12 @@ export class RealtimeVoiceSession {
   }
 
   private handleServerEvent(raw: string) {
-    let evt: { type?: string; delta?: string; error?: { message?: string } };
+    let evt: {
+      type?: string;
+      delta?: string;
+      transcript?: string;
+      error?: { message?: string };
+    };
     try {
       evt = JSON.parse(raw);
     } catch {
@@ -188,6 +276,12 @@ export class RealtimeVoiceSession {
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
         this.cb.onCaption?.("", true);
+        break;
+      case "conversation.item.input_audio_transcription.delta":
+        if (evt.delta) this.cb.onUserCaption?.(evt.delta, false);
+        break;
+      case "conversation.item.input_audio_transcription.completed":
+        this.cb.onUserCaption?.(evt.transcript ?? "", true);
         break;
       case "response.done":
         this.cb.onStatus?.("connected");
