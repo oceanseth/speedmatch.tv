@@ -115,14 +115,32 @@ test('handler: spoofed leftmost XFF cannot rotate the IP key', async () => {
   assert.equal((await handler(req())).status, 429);
 });
 
-test('defaultClientKey prefers CF-Connecting-IP over XFF', () => {
-  const req = new Request('http://x/', {
+test('defaultClientKey honors CF-Connecting-IP only when the peer IS Cloudflare', () => {
+  // Via the custom domain: peer (rightmost XFF) is a Cloudflare egress IP.
+  const viaCf = new Request('http://x/', {
     headers: {
       'cf-connecting-ip': '198.51.100.9',
-      'x-forwarded-for': 'spoofed, 203.0.113.7',
+      'x-forwarded-for': 'spoofed, 104.18.3.81',
     },
   });
-  assert.equal(defaultClientKey(req), '198.51.100.9');
+  assert.equal(defaultClientKey(viaCf), '198.51.100.9');
+  // IPv6 Cloudflare peer.
+  const viaCf6 = new Request('http://x/', {
+    headers: {
+      'cf-connecting-ip': '198.51.100.9',
+      'x-forwarded-for': '2606:4700::6812:251',
+    },
+  });
+  assert.equal(defaultClientKey(viaCf6), '198.51.100.9');
+  // Direct origin hit: attacker types CF-Connecting-IP, but their real peer
+  // address is not Cloudflare — the header must be ignored.
+  const directOrigin = new Request('http://x/', {
+    headers: {
+      'cf-connecting-ip': '1.2.3.4',
+      'x-forwarded-for': '203.0.113.7',
+    },
+  });
+  assert.equal(defaultClientKey(directOrigin), '203.0.113.7');
   assert.equal(
     defaultClientKey(new Request('http://x/', { headers: { 'x-forwarded-for': 'spoofed, 203.0.113.7' } })),
     '203.0.113.7',

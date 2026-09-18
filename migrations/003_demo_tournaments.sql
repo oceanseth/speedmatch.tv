@@ -47,9 +47,10 @@ BEGIN
     IF array_length(e, 1) IS DISTINCT FROM 4 THEN
       RAISE EXCEPTION 'demo seed %: entrants not found', t->>'title';
     END IF;
-    SELECT p.id INTO w1 FROM personas p WHERE p.name = t->'winners'->>0 AND p.category = t->>'category';
-    SELECT p.id INTO w2 FROM personas p WHERE p.name = t->'winners'->>1 AND p.category = t->>'category';
-    SELECT p.id INTO wf FROM personas p WHERE p.name = t->'winners'->>2 AND p.category = t->>'category';
+    -- STRICT: a winner-name typo raises instead of silently writing NULL.
+    SELECT p.id INTO STRICT w1 FROM personas p WHERE p.name = t->'winners'->>0 AND p.category = t->>'category';
+    SELECT p.id INTO STRICT w2 FROM personas p WHERE p.name = t->'winners'->>1 AND p.category = t->>'category';
+    SELECT p.id INTO STRICT wf FROM personas p WHERE p.name = t->'winners'->>2 AND p.category = t->>'category';
 
     finished := now() - (i || ' hours')::interval;
 

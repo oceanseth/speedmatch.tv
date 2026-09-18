@@ -136,17 +136,57 @@ export interface TokenBrokerDeps {
 }
 
 /**
- * Rate-limit key that the client cannot choose. We sit behind Cloudflare
- * (which APPENDS the true client IP to x-forwarded-for), so the leftmost
- * hop is attacker-typed — one spoofed header per request would rotate the
- * key. Prefer CF-Connecting-IP; fall back to the RIGHTMOST XFF hop (the one
- * added by the nearest trusted proxy).
+ * Cloudflare's published egress ranges (https://www.cloudflare.com/ips/).
+ * Used to decide whether the immediate peer is actually Cloudflare before
+ * trusting CF-Connecting-IP.
+ */
+const CLOUDFLARE_V4: Array<[number, number]> = [
+  '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+  '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+  '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+  '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+].map((cidr) => {
+  const [net, bits] = cidr.split('/');
+  const [a, b, c, d] = net.split('.').map(Number);
+  const base = ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
+  const mask = bits === '0' ? 0 : (~0 << (32 - Number(bits))) >>> 0;
+  return [base & mask, mask];
+});
+const CLOUDFLARE_V6_PREFIXES = [
+  '2400:cb00:', '2606:4700:', '2803:f800:', '2405:b500:', '2405:8100:',
+  '2c0f:f248:', '2a06:98c0:', '2a06:98c1:', '2a06:98c2:', '2a06:98c3:',
+  '2a06:98c4:', '2a06:98c5:', '2a06:98c6:', '2a06:98c7:',
+];
+
+export function isCloudflareIp(ip: string): boolean {
+  const v4 = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const n = ((+v4[1] << 24) | (+v4[2] << 16) | (+v4[3] << 8) | +v4[4]) >>> 0;
+    return CLOUDFLARE_V4.some(([base, mask]) => (n & mask) === base);
+  }
+  const lower = ip.toLowerCase();
+  return CLOUDFLARE_V6_PREFIXES.some((p) => lower.startsWith(p));
+}
+
+/**
+ * Rate-limit key that the client cannot choose.
+ *
+ * Trust model: the RIGHTMOST x-forwarded-for hop is appended by the
+ * InstaCloud edge in front of this container, so it is always the IP that
+ * actually connected to our infrastructure — for traffic via the
+ * speedmatch.tv custom domain that is a Cloudflare egress IP; for a direct
+ * hit on the origin edge URL it is the attacker's own address. Only when
+ * that trusted peer IS Cloudflare do we honor CF-Connecting-IP (the real
+ * visitor behind CF, which CF sets and strips from clients). A direct-origin
+ * attacker typing CF-Connecting-IP therefore gets keyed by their real IP —
+ * the header is ignored because their peer address isn't Cloudflare's.
  */
 export function defaultClientKey(req: Request): string {
-  const cf = req.headers.get('cf-connecting-ip');
-  if (cf) return cf.trim();
   const hops = req.headers.get('x-forwarded-for')?.split(',') ?? [];
-  return hops.at(-1)?.trim() || 'unknown';
+  const peer = hops.at(-1)?.trim() || '';
+  const cf = req.headers.get('cf-connecting-ip');
+  if (cf && peer && isCloudflareIp(peer)) return cf.trim();
+  return peer || 'unknown';
 }
 
 export function createTokenBrokerHandler(deps: TokenBrokerDeps) {
