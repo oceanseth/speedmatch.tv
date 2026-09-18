@@ -22,24 +22,41 @@ export function getPool(): Pool {
 }
 
 /**
- * Run a query, retrying once after a short delay. The managed DB's proxy
- * answers "instance is unavailable, please retry" while a suspended instance
- * resumes — one retry converts that cold start into a slow response instead
- * of a 5xx.
+ * Only connection-ESTABLISHMENT failures are retryable: the query never
+ * reached the server, so a retry cannot double-apply a write (this helper
+ * will carry the stage loop's inserts and version bumps). The scale-to-zero
+ * DB takes ~8-15s to resume; its proxy either refuses with "instance is
+ * unavailable, please retry" or lets the connect hang into our timeout.
+ * Everything else — SQL errors, constraint violations, mid-query drops
+ * (ECONNRESET after connect) — surfaces immediately.
  */
+function isRetryableConnectError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string };
+  // ECONNREFUSED: TCP connect refused. 57P03: server starting up.
+  // 53300: connection slots full while the instance warms.
+  if (e?.code === "ECONNREFUSED" || e?.code === "57P03" || e?.code === "53300") {
+    return true;
+  }
+  return /instance is unavailable|timeout expired|Connection terminated due to connection timeout/i.test(
+    e?.message ?? "",
+  );
+}
+
+// Two waits + three 15s connect windows comfortably cover a cold resume.
+const RETRY_DELAYS_MS = [2_000, 6_000];
+
 export async function query<R extends object>(
   text: string,
   values: unknown[] = [],
 ): Promise<R[]> {
-  const pool = getPool();
-  try {
-    return (await pool.query(text, values)).rows as R[];
-  } catch (first) {
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+  for (let attempt = 0; ; attempt++) {
     try {
-      return (await pool.query(text, values)).rows as R[];
-    } catch {
-      throw first;
+      return (await getPool().query(text, values)).rows as R[];
+    } catch (err) {
+      if (attempt >= RETRY_DELAYS_MS.length || !isRetryableConnectError(err)) {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
     }
   }
 }
