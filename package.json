@@ -10,11 +10,12 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@speedmatch/server": "0.1.0",
+    "better-auth": "^1.7.5",
     "next": "16.3.5",
     "pg": "^8.23.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "@speedmatch/server": "0.1.0"
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
