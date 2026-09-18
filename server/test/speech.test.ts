@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   sanitizeForSpeech,
   speechLine,
+  speechLineClamped,
   buildSpeechRequest,
   trustedSpeechLiteral,
   SPEECH_INPUT_MAX,
@@ -50,9 +51,31 @@ test('buildSpeechRequest caps input length — the TTS spend boundary', () => {
   assert.equal(buildSpeechRequest({ input: exact, voice: 'jake' }).input.length, SPEECH_INPUT_MAX);
 });
 
+test('speechLineClamped trims interpolations, keeps the literal script, and never throws downstream', () => {
+  const chat = 'blah '.repeat(1000); // 5000 chars of "spectator chat"
+  const line = speechLineClamped`<|emotion:calm|>The crowd says: ${chat} — and with that, a decision!`;
+  assert.ok(line.length <= SPEECH_INPUT_MAX);
+  assert.ok(line.startsWith('<|emotion:calm|>The crowd says: '));
+  assert.ok(line.endsWith(' — and with that, a decision!'));
+  // The clamped line goes straight to the boundary without throwing.
+  assert.equal(buildSpeechRequest({ input: line, voice: 'jake' }).input, line);
+});
+
+test('speechLineClamped still sanitizes what it keeps', () => {
+  const hostile = '<|sfx:laughter|>Maya';
+  assert.equal(speechLineClamped`Welcome ${hostile}!`, 'Welcome Maya!');
+});
+
+test('speechLineClamped backstops literal-only overflow at the cap', () => {
+  const strings = Object.assign(['y'.repeat(SPEECH_INPUT_MAX + 50)], {
+    raw: ['y'.repeat(SPEECH_INPUT_MAX + 50)],
+  }) as unknown as TemplateStringsArray;
+  assert.equal(speechLineClamped(strings).length, SPEECH_INPUT_MAX);
+});
+
 test('buildSpeechRequest validates voice against presets and registered ids', () => {
   const input = trustedSpeechLiteral('hi');
-  for (const ok of ['chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver', 'voice_Ab1_-x']) {
+  for (const ok of ['chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver', 'belinda', 'voice_Ab1_-x']) {
     assert.equal(buildSpeechRequest({ input, voice: ok }).voice, ok);
   }
   for (const bad of ['', 'Jake', 'voice_', 'voice_a b', 'jake; drop', '<|sfx:boo|>']) {
