@@ -1,3 +1,4 @@
+import Link from "next/link";
 import Header from "../components/Header";
 import LiveShowcase from "../components/LiveShowcase";
 
@@ -16,12 +17,12 @@ export default function Home() {
             you talk back, you pick the winner.
           </p>
           <div className="mt-8 flex items-center justify-center gap-4">
-            <button
-              type="button"
+            <Link
+              href="/session/new"
               className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-7 py-3 font-semibold text-white shadow-lg shadow-brand-purple/25 transition hover:opacity-90"
             >
               Start a session
-            </button>
+            </Link>
             <a
               href="#live"
               className="rounded-full border border-card-border bg-card px-7 py-3 font-semibold transition hover:border-brand-purple"
