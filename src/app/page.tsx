@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+import RecentShows from "../components/RecentShows";
 import Link from "next/link";
 import Header from "../components/Header";
 import LiveShowcase from "../components/LiveShowcase";
@@ -33,6 +35,10 @@ export default function Home() {
         </section>
 
         <LiveShowcase />
+
+        <Suspense fallback={<p className="mx-auto max-w-6xl px-4 py-14 text-muted">Loading recent shows…</p>}>
+          <RecentShows />
+        </Suspense>
 
         <section
           id="how-it-works"

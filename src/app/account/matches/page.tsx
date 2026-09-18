@@ -6,33 +6,12 @@ import {
   type PersonaLite,
   type TournamentSummary,
 } from "../../../lib/matches";
-import { roundLabel, type Avatar } from "../../../lib/types";
+import AvatarGlyph from "../../../components/AvatarGlyph";
+import { roundLabel } from "../../../lib/types";
 
 export const metadata: Metadata = {
   title: "My Matches — SpeedMatch.tv",
 };
-
-// Same three-kind rendering as LiveShowcase so image/stream personas
-// never fall through to a blank space.
-function AvatarGlyph({ avatar, size }: { avatar: Avatar; size: number }) {
-  return (
-    <>
-      {avatar.kind === "emoji" && avatar.value}
-      {avatar.kind === "image" && (
-        // Hosts must be allowlisted server-side before user-supplied
-        // URLs reach this page (viewer-IP beacon otherwise).
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={avatar.value}
-          alt=""
-          className="inline-block rounded-md object-cover align-text-bottom"
-          style={{ height: size, width: size }}
-        />
-      )}
-      {avatar.kind === "stream" && <span>🎥</span>}
-    </>
-  );
-}
 
 function Entrant({
   persona,

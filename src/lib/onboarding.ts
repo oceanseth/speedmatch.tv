@@ -1,3 +1,4 @@
+import { stripSpeechControlTokens } from "../../server/src/onboarding/profile";
 import type { Category } from "./types";
 
 /**
@@ -36,32 +37,9 @@ export interface OnboardResponse {
 
 export const MAX_ANSWER_CHARS = 200;
 
-/**
- * User text is untrusted input that will eventually reach prompts and TTS.
- * Strip Boson inline control tags (<|emotion:x|> etc.), angle brackets,
- * control characters, and invisible/steering codepoints — including the
- * Unicode Tags block (U+E0000–E007F) and variation selectors, which
- * survive human review precisely because no renderer shows them.
- * Collapse whitespace; cap length. The server re-runs this on every
- * value; the client copy exists only for the character counter.
- *
- * Must stay semantically identical to the backend's
- * stripSpeechControlTokens (server/src/onboarding/profile.ts on
- * backend-skeleton). Once that package merges, import it here and delete
- * this copy — one invariant, one implementation. Take the backend's
- * ordering then (Tags block stripped BEFORE the <|…|> match, so a
- * tag-encoded payload is deleted whole rather than leaving inner text).
+/** Apply the shared server sanitizer before the UI's answer-length cap.
+ * The API re-runs this for every incoming value; client sanitization is UX only.
  */
 export function sanitizeAnswer(raw: string): string {
-  return raw
-    .replace(/<\|[\s\S]*?\|>/g, "")
-    .replace(/[<>|]/g, "")
-    .replace(
-      /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufe00-\ufe0f]/g,
-      " ",
-    )
-    .replace(/[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_ANSWER_CHARS);
+  return stripSpeechControlTokens(raw).slice(0, MAX_ANSWER_CHARS);
 }
