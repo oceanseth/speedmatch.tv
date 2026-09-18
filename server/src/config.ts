@@ -15,6 +15,11 @@ export const config = {
   /** Cap on the onboarding conversation so a session can't park there forever. */
   onboardSeconds: 300,
   /** Ephemeral Boson client secrets: long enough for one leg, no longer. */
+  // COUPLED to the client's reconnect-budget reset threshold (30s in
+  // src/lib/realtime.ts): a socket must plausibly outlive 30s for the
+  // recovery budget to restore. Lower this below ~40s and expiry-driven
+  // churn outpaces resets — sessions quietly go back to dying after three
+  // reconnects. Keep well above the reset threshold.
   clientSecretSeconds: 90,
   /** Token-broker rate limits: per user, per client IP, and process-wide. */
   tokenMintsPerMinute: 10,

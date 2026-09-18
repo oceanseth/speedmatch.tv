@@ -37,14 +37,20 @@ export async function POST(req: Request) {
   // One live show per account: bounds this unverified-registration write
   // endpoint, and it is the product rule anyway — you finish (or abandon)
   // your tournament before starting the next.
-  const live = await query(
-    `SELECT 1 FROM tournaments
+  const live = await query<{ id: string; category: string }>(
+    `SELECT id, category FROM tournaments
      WHERE user_id = $1 AND phase NOT IN ('FINAL', 'ABANDONED')
      LIMIT 1`,
     [user.id],
   );
   if (live.length > 0) {
-    return NextResponse.json({ error: "live_tournament_exists" }, { status: 409 });
+    // The id is the caller's OWN live tournament — returning it lets the
+    // lobby button route there instead of dead-ending (no oracle: this
+    // branch requires the owner's session).
+    return NextResponse.json(
+      { error: "live_tournament_exists", id: live[0].id, category: live[0].category },
+      { status: 409 },
+    );
   }
 
   const state = createTournament();
