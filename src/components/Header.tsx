@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
+import AuthButton from "./AuthButton";
 
 export default function Header() {
   return (
@@ -23,12 +24,7 @@ export default function Header() {
           <Link href="/account/matches" className="hidden hover:text-foreground sm:block">
             My Matches
           </Link>
-          <button
-            type="button"
-            className="rounded-full border border-card-border bg-card px-4 py-1.5 font-medium text-foreground transition hover:border-brand-purple"
-          >
-            Sign in
-          </button>
+          <AuthButton />
         </nav>
       </div>
     </header>

@@ -20,10 +20,13 @@ function sessionIdFrom(req: Request): string | null {
  * yet. The broker's per-session (120/min), per-IP (20/min), and global mint
  * budgets are the spend guard.
  *
- * TODO(ownership): when tournament create lands, a non-lobby tournamentId
- * must be verified against tournaments.user_id === sid AND a phase where the
- * owner may speak; spectators are refused. Lobby minting goes away with real
- * auth.
+ * TODO(ownership): when tournament create lands, authorize reads the Better
+ * Auth session FIRST and falls back to sm_sid only for anonymous lobby —
+ * otherwise the rotatable cookie stays the thing gating spend (Opus, #18
+ * review). Non-lobby tournamentId must be verified against the tournament's
+ * owner AND a phase where the owner may speak; spectators are refused.
+ * Identity mapping decision: users gains `auth_user_id text unique`
+ * referencing Better Auth's "user".id — tournaments.user_id stays uuid.
  */
 async function authorize(req: Request): Promise<MintGrant | null> {
   const sid = sessionIdFrom(req);
