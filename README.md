@@ -6,6 +6,8 @@
 
 <h2 align="center"><a href="https://www.speedmatch.tv/pitch">Click to read our pitch deck</a></h2>
 
+<h3 align="center"><a href="https://raw.githubusercontent.com/oceanseth/speedmatch.tv/main/demo/speedmatch-demo.mp4">🎬 Click to view demo video</a></h3>
+
 # SpeedMatch.tv — 15 seconds to win you over
 
 **The world's first AI speed-dating game show.** Contestants aren't just people —
