@@ -52,7 +52,10 @@ export const MAX_ANSWER_CHARS = 200;
  * ordering then (Tags block stripped BEFORE the <|…|> match, so a
  * tag-encoded payload is deleted whole rather than leaving inner text).
  */
-export function sanitizeAnswer(raw: string): string {
+export function sanitizeAnswer(
+  raw: string,
+  maxChars: number = MAX_ANSWER_CHARS,
+): string {
   return raw
     .replace(/<\|[\s\S]*?\|>/g, "")
     .replace(/[<>|]/g, "")
@@ -63,5 +66,5 @@ export function sanitizeAnswer(raw: string): string {
     .replace(/[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, MAX_ANSWER_CHARS);
+    .slice(0, maxChars);
 }

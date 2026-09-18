@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   PITCH_LEG_MS,
@@ -116,12 +117,12 @@ function SessionCard({
           </div>
           <span className="font-mono text-xs text-muted">{secondsLeft}s</span>
         </div>
-        <button
-          type="button"
+        <Link
+          href={`/stage/${session.category}`}
           className="rounded-full border border-card-border px-3 py-1 text-xs font-medium text-foreground transition hover:border-brand-pink"
         >
           Watch
-        </button>
+        </Link>
       </div>
     </div>
   );
@@ -178,7 +179,9 @@ export default function LiveShowcase() {
           return (
             <div key={cat.key}>
               <h2 className="text-lg font-bold">
-                <span className="brand-gradient-text">{cat.title}</span>
+                <Link href={`/stage/${cat.key}`} className="brand-gradient-text">
+                  {cat.title}
+                </Link>
               </h2>
               <p className="mb-4 text-sm text-muted">{cat.tagline}</p>
               <div className="flex flex-col gap-4">
