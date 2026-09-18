@@ -24,6 +24,27 @@ const ORDER: OnboardField[] = [
 
 const CATEGORIES: Category[] = ["people", "products", "places"];
 
+// Every legit body is a handful of short answers; anything bigger is abuse.
+// Sanitization is regex work, so the cap must run before any parsing/
+// sanitizing — this endpoint is unauthenticated, and once it fronts Higgs
+// Realtime it becomes a spend endpoint that also needs the broker's
+// rate limiter in front of it.
+const MAX_BODY_BYTES = 8_192;
+const MAX_INTERESTS = 3;
+
+// The host literally asks "a person, a product, or a place?" — match the
+// natural answers, not just the plural table names.
+const CATEGORY_SYNONYMS: Record<Category, string[]> = {
+  people: ["people", "person", "human", "someone", "somebody", "date"],
+  products: ["products", "product", "gadget", "thing", "item", "something to buy"],
+  places: ["places", "place", "destination", "city", "location", "somewhere", "trip", "travel"],
+};
+
+function parseCategory(msg: string): Category | undefined {
+  const m = msg.toLowerCase();
+  return CATEGORIES.find((c) => CATEGORY_SYNONYMS[c].some((s) => m.includes(s)));
+}
+
 function questionFor(
   field: OnboardField,
   answers: Partial<OnboardingProfile>,
@@ -68,7 +89,10 @@ function nextMissing(answers: Partial<OnboardingProfile>): OnboardField | null {
 export async function POST(req: Request) {
   let body: OnboardRequest;
   try {
-    body = (await req.json()) as OnboardRequest;
+    const raw = await req.text();
+    if (raw.length > MAX_BODY_BYTES)
+      return NextResponse.json({ error: "payload too large" }, { status: 413 });
+    body = JSON.parse(raw) as OnboardRequest;
   } catch {
     return NextResponse.json({ error: "bad request" }, { status: 400 });
   }
@@ -78,17 +102,20 @@ export async function POST(req: Request) {
   const answers: Partial<OnboardingProfile> = {};
   const a = body.answers ?? {};
   if (typeof a.displayName === "string")
-    answers.displayName = sanitizeAnswer(a.displayName) || undefined;
+    answers.displayName = sanitizeAnswer(a.displayName).slice(0, 40) || undefined;
   if (CATEGORIES.includes(a.seeking as Category))
     answers.seeking = a.seeking as Category;
   if (typeof a.lookingFor === "string")
     answers.lookingFor = sanitizeAnswer(a.lookingFor) || undefined;
   if (Array.isArray(a.interests)) {
+    // Bound the array before any sanitizing runs — a huge array here is
+    // one regex pass per element on an unauthenticated endpoint.
+    if (a.interests.length > MAX_INTERESTS)
+      return NextResponse.json({ error: "bad request" }, { status: 400 });
     const cleaned = a.interests
       .filter((i): i is string => typeof i === "string")
       .map(sanitizeAnswer)
-      .filter(Boolean)
-      .slice(0, 3);
+      .filter(Boolean);
     if (cleaned.length > 0) answers.interests = cleaned;
   }
   if (typeof a.funFact === "string")
@@ -103,21 +130,24 @@ export async function POST(req: Request) {
           answers.displayName = msg.slice(0, 40);
           break;
         case "seeking": {
-          const m = msg.toLowerCase();
-          const cat = CATEGORIES.find((c) => m.includes(c.slice(0, 5)));
+          const cat = parseCategory(msg);
           if (cat) answers.seeking = cat;
           break;
         }
         case "lookingFor":
           answers.lookingFor = msg;
           break;
-        case "interests":
-          answers.interests = msg
+        case "interests": {
+          const list = msg
             .split(/[,;]| and /i)
             .map((s) => s.trim())
             .filter(Boolean)
-            .slice(0, 3);
+            .slice(0, MAX_INTERESTS);
+          // "," sanitizes to "," and splits to nothing — an empty list is
+          // not an answer, so leave the field unset and re-ask.
+          if (list.length > 0) answers.interests = list;
           break;
+        }
         case "funFact":
           answers.funFact = msg;
           break;

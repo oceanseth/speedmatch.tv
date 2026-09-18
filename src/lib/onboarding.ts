@@ -44,16 +44,21 @@ export const MAX_ANSWER_CHARS = 200;
  * survive human review precisely because no renderer shows them.
  * Collapse whitespace; cap length. The server re-runs this on every
  * value; the client copy exists only for the character counter.
+ *
+ * Must stay semantically identical to the backend's
+ * stripSpeechControlTokens (server/src/onboarding/profile.ts on
+ * backend-skeleton). Once that package merges, import it here and delete
+ * this copy — one invariant, one implementation.
  */
 export function sanitizeAnswer(raw: string): string {
   return raw
-    .replace(/<\|[^|]*\|>/g, "")
-    .replace(/[<>]/g, "")
+    .replace(/<\|[\s\S]*?\|>/g, "")
+    .replace(/[<>|]/g, "")
     .replace(
       /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufe00-\ufe0f]/g,
       " ",
     )
-    .replace(/[\u{E0000}-\u{E007F}]/gu, "")
+    .replace(/[\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, MAX_ANSWER_CHARS);
