@@ -76,8 +76,11 @@ export interface BroadcastTransport {
   putChunk(url: string, blob: Blob, contentType: string): Promise<boolean>;
   /**
    * Withdraw consent: stop accepting mints and delete uploaded chunks.
-   * Resolves true only when the server confirmed the deletion — the UI
-   * keeps the delete action available until it does.
+   * Resolves true only when the server confirmed no chunks remain — the
+   * UI keeps the delete action available until it does. Route contract:
+   * 2xx only once the chunks are actually gone, and idempotently — a show
+   * with nothing to delete (already revoked, TTL-expired, never uploaded)
+   * must also 2xx, or this client offers a delete that can never succeed.
    */
   revoke(tournamentId: string): Promise<boolean>;
 }
