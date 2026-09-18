@@ -6,6 +6,7 @@
   "exports": {
     "./tournament": "./src/tournament/machine.ts",
     "./boson": "./src/boson/tokenBroker.ts",
+    "./speech": "./src/boson/speech.ts",
     "./config": "./src/config.ts",
     "./onboarding": "./src/onboarding/profile.ts"
   },

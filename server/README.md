@@ -108,7 +108,11 @@ and bracket decisions enforced in server code. Apply request-body size limits
 before JSON parsing; this module bounds individual fields after parsing.
 At the TTS request boundary, also sanitize every untrusted name, tagline or other
 value interpolated into speech input. Profile validation alone does not cover
-those other sources. A speech API wrapper is not implemented in this module.
+those other sources. Use `@speedmatch/server/speech`: the `speechLine` tagged
+template keeps trusted script literals (including intentional Boson delivery
+tags) and sanitizes every interpolated value; `buildSpeechRequest` shapes the
+`POST /v1/audio/speech` body. Never pass untrusted text to a TTS input any
+other way.
 
 ## Run migrations (InstaCloud branch DB)
 
