@@ -40,6 +40,9 @@ export const MAX_ANSWER_CHARS = 200;
 /** Apply the shared server sanitizer before the UI's answer-length cap.
  * The API re-runs this for every incoming value; client sanitization is UX only.
  */
-export function sanitizeAnswer(raw: string): string {
-  return stripSpeechControlTokens(raw).slice(0, MAX_ANSWER_CHARS);
+export function sanitizeAnswer(
+  raw: string,
+  maxChars: number = MAX_ANSWER_CHARS,
+): string {
+  return stripSpeechControlTokens(raw).slice(0, maxChars);
 }
