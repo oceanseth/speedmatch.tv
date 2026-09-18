@@ -6,7 +6,8 @@
   "exports": {
     "./tournament": "./src/tournament/machine.ts",
     "./boson": "./src/boson/tokenBroker.ts",
-    "./config": "./src/config.ts"
+    "./config": "./src/config.ts",
+    "./onboarding": "./src/onboarding/profile.ts"
   },
   "scripts": {
     "test": "node --import tsx --test test/*.test.ts",

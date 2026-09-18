@@ -47,11 +47,68 @@ The WS/route layer that mounts this must enforce:
 3. Drive `TIMER_EXPIRED` from a server timer using `msRemaining()`.
 4. Append every transition to `session_events`, including `TOKEN_MINTED` via
    the broker's `onMint` hook.
-5. Onboarding transcript → `onboarding_profiles.profile` goes through typed
-   schema extraction; strip `<|...|>` control tags from anything user-supplied
-   before it reaches TTS.
+5. Extract onboarding transcript into the structured profile below and validate
+   it with `parseOnboardingProfile`. Store only validated output. Strip speech
+   control tokens from other untrusted text with `stripSpeechControlTokens`.
 6. The public live feed queries `WHERE is_public` only (default false), and
    shows a consented display pseudonym — never the account name.
+
+## Onboarding profile boundary
+
+`@speedmatch/server/onboarding` is a zero-dependency validation and prompt-context
+helper. The extraction model and authenticated HTTP/storage layer are supplied by
+the app. Its version-1 JSON schema is:
+
+```ts
+{
+  version: 1,
+  category: 'people' | 'products' | 'places',
+  goal: string,          // required, 1–280 UTF-16 code units
+  interests: string[],   // required, 0–8 entries, each 1–120 code units
+  preferences: string[], // same limits
+  dealbreakers: string[] // same limits
+}
+```
+
+Unknown fields and invalid types are rejected, never coerced. Length limits
+apply before normalization. Control tags, residual tag delimiters and invisible
+control characters are removed; whitespace is normalized and lists deduplicated.
+Unicode Tags (U+E0000–U+E007F) and both variation-selector blocks
+(U+FE00–U+FE0F, U+E0100–U+E01EF) are removed before control-tag parsing.
+This can change emoji or ideograph presentation while preserving base characters.
+Raw transcripts, identity, voice-cloning consent and public-sharing consent do
+not belong in model output. Capture consent independently from the authenticated
+user; leave `voice_consent` false unless explicitly granted.
+
+```ts
+import {
+  parseOnboardingProfile, buildPublicSummary, buildPitchContext,
+} from '@speedmatch/server/onboarding';
+
+const profile = parseOnboardingProfile(extractedJson);
+// Default summary includes only version/category, no free-text fields.
+const privateByDefault = buildPublicSummary(profile);
+// After the user reviews these exact normalized values and approves sharing:
+const publicSummary = buildPublicSummary(profile, ['goal', 'interests']);
+const context = buildPitchContext(publicSummary);
+```
+
+Save `profile` and `publicSummary` to `onboarding_profiles.profile` and
+`public_summary`. Approved fields must come from the user's explicit review,
+not the extraction model. Reconfirm after values change. A field allowlist is
+**not automatic PII redaction**: even a goal may contain an email or other private
+detail. Show that the chosen values can be spoken aloud before approval.
+Session broadcasting (`isPublic`) requires separate consent.
+
+Load the approved summary from server-owned storage before building pitch
+context; do not accept a client-provided summary as proof of approval.
+The fixed template treats serialized values as data. It does not make arbitrary
+text immune to prompt injection. Keep authorization, timing, tool permissions
+and bracket decisions enforced in server code. Apply request-body size limits
+before JSON parsing; this module bounds individual fields after parsing.
+At the TTS request boundary, also sanitize every untrusted name, tagline or other
+value interpolated into speech input. Profile validation alone does not cover
+those other sources. A speech API wrapper is not implemented in this module.
 
 ## Run migrations (InstaCloud branch DB)
 
