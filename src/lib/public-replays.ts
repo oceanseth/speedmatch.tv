@@ -1,4 +1,4 @@
-import { stripSpeechControlTokens } from "../../server/src/onboarding/profile";
+import { stripSpeechControlTokens } from "@speedmatch/server/onboarding";
 import type { MatchRecord, PersonaLite, TournamentSummary } from "./matches";
 import type { Avatar } from "./types";
 

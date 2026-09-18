@@ -1,8 +1,10 @@
 # @speedmatch/server — backend skeleton
 
 Framework-agnostic backend core for the speed-match tournament, built to drop
-into the Next.js app as a workspace package (or copy `src/` into the app —
-there are zero runtime dependencies).
+into the Next.js app as an npm workspace package with zero runtime dependencies.
+The app depends on this package explicitly; use its declared exports rather than
+relative imports into `server/src`. Install from the repository root with `npm ci`;
+the root lockfile owns both packages.
 
 ## What's here
 
@@ -124,5 +126,7 @@ psql "$(insta --agent db url --branch <branch>)" -f migrations/002_seed_personas
 ## Tests
 
 ```bash
-cd server && npm install && npm test && npm run typecheck
+npm ci
+npm test --workspace @speedmatch/server
+npm run typecheck --workspace @speedmatch/server
 ```
