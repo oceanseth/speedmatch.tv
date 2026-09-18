@@ -61,27 +61,21 @@ export const POST = createTokenBrokerHandler({
       console.log(`[realtime/token] TOKEN_MINTED (lobby) user=${grant.userId}`);
       return;
     }
-    // The event log owns its own sequence: tournaments.version is the
-    // optimistic-concurrency token and must move ONLY when state changes —
-    // an audit append bumping it would invalidate an in-flight transition
-    // (Opus, #20 review). The (tournament_id, seq) PK serializes concurrent
-    // appends; on a conflict we retry, and after that we drop the audit row
-    // rather than fail a mint that already succeeded.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        await query(
-          `INSERT INTO session_events (tournament_id, seq, type, payload)
-           SELECT $1, COALESCE(MAX(seq), 0) + 1, 'TOKEN_MINTED', $2::jsonb
-           FROM session_events WHERE tournament_id = $1`,
-          [grant.tournamentId, JSON.stringify({ userId: grant.userId })],
-        );
-        return;
-      } catch (err) {
-        if ((err as { code?: string }).code !== "23505") throw err;
-      }
+    // Serialized append: tournamentStore.appendEvent takes the tournaments
+    // row lock, so a mint's seq allocation can no longer interleave with a
+    // state transition's and roll it back (Opus #27 finding 3). version
+    // still moves ONLY on state changes (#20 ruling). A failure drops the
+    // audit row, never the mint that already succeeded.
+    try {
+      const { appendEvent } = await import("../../../../lib/tournamentStore");
+      await appendEvent(grant.tournamentId, "TOKEN_MINTED", {
+        userId: grant.userId,
+      });
+    } catch (err) {
+      console.error(
+        `[realtime/token] TOKEN_MINTED audit dropped tournament=${grant.tournamentId}`,
+        err,
+      );
     }
-    console.error(
-      `[realtime/token] TOKEN_MINTED audit dropped after seq conflicts tournament=${grant.tournamentId}`,
-    );
   },
 });

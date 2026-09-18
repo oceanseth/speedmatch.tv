@@ -80,3 +80,39 @@ export async function query<R extends object>(
     }
   }
 }
+
+import type { PoolClient } from "pg";
+
+/**
+ * Run fn inside a transaction on one client. The cold-start retry applies
+ * only to ACQUIRING the connection — once BEGIN has run, a failure rolls
+ * back and rethrows (retrying mid-transaction work could double-apply).
+ */
+export async function withTransaction<T>(
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  let client: PoolClient | undefined;
+  for (let attempt = 0; ; attempt++) {
+    if (warming) await warming;
+    try {
+      client = await getPool().connect();
+      break;
+    } catch (err) {
+      if (attempt >= RETRY_DELAYS_MS.length || !isRetryableConnectError(err)) {
+        throw err;
+      }
+      await sharedDelay(RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}

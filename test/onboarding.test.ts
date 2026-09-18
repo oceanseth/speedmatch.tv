@@ -109,3 +109,13 @@ test("declaratively framed answers are never control phrases", async () => {
   const r = await (await onboard({ answers: base, field: "lookingFor", message: "I want to slow down" })).json();
   assert.equal(r.answers.lookingFor, "I want to slow down");
 });
+
+test("article-led stalls are control; 'a moment, please' matches (Opus correction)", async () => {
+  const base = { displayName: "Seth", seeking: "places" };
+  let r = await (await onboard({ answers: base, field: "lookingFor", message: "a sec, hold on" })).json();
+  assert.equal(r.answers.lookingFor, undefined);
+  r = await (await onboard({ answers: base, field: "lookingFor", message: "a moment, please" })).json();
+  assert.equal(r.answers.lookingFor, undefined);
+  r = await (await onboard({ answers: base, field: "lookingFor", message: "a place where I can stop and think" })).json();
+  assert.equal(r.answers.lookingFor, "a place where I can stop and think");
+});
