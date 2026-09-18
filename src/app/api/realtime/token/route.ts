@@ -2,6 +2,8 @@ import {
   createTokenBrokerHandler,
   type MintGrant,
 } from "@speedmatch/server/boson";
+import { getAppUser } from "../../../../lib/identity";
+import { query } from "../../../../lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -15,22 +17,17 @@ function sessionIdFrom(req: Request): string | null {
 }
 
 /**
- * v1 authorize: requires the sm_sid session cookie (GET /api/session first).
- * `tournamentId` defaults to "lobby" — the gate-1 mic test has no tournament
- * yet. The broker's per-session (120/min), per-IP (20/min), and global mint
- * budgets are the spend guard.
- *
- * TODO(ownership): when tournament create lands, authorize reads the Better
- * Auth session FIRST and falls back to sm_sid only for anonymous lobby —
- * otherwise the rotatable cookie stays the thing gating spend (Opus, #18
- * review). Non-lobby tournamentId must be verified against the tournament's
- * owner AND a phase where the owner may speak; spectators are refused.
- * Identity mapping decision: users gains `auth_user_id text unique`
- * referencing Better Auth's "user".id — tournaments.user_id stays uuid.
+ * Ownership authorize (Opus #13/#18 review checklist):
+ * - The Better Auth session is read FIRST; the rotatable anonymous sm_sid
+ *   cookie only authorizes "lobby" mints (the /session/new voice preview).
+ * - A non-lobby tournamentId must belong to the signed-in account
+ *   (tournaments.user_id via users.auth_user_id) and be in a phase where
+ *   the owner may speak — FINAL/ABANDONED refuse. Spectators and
+ *   non-owners get the same opaque 401 as an unknown id (no oracle).
+ * - The broker's per-user/per-IP/global budgets remain the spend guard.
  */
 async function authorize(req: Request): Promise<MintGrant | null> {
-  const sid = sessionIdFrom(req);
-  if (!sid) return null;
+  const appUser = await getAppUser(req.headers);
   let tournamentId = "lobby";
   try {
     const body: unknown = await req.json();
@@ -39,18 +36,42 @@ async function authorize(req: Request): Promise<MintGrant | null> {
   } catch {
     // No/invalid JSON body is fine — lobby mint.
   }
-  return { userId: sid, tournamentId };
+
+  if (tournamentId === "lobby") {
+    const anonId = appUser?.id ?? sessionIdFrom(req);
+    return anonId ? { userId: anonId, tournamentId: "lobby" } : null;
+  }
+
+  if (!appUser || !UUID_RE.test(tournamentId)) return null;
+  const rows = await query<{ phase: string }>(
+    `SELECT phase FROM tournaments WHERE id = $1 AND user_id = $2`,
+    [tournamentId, appUser.id],
+  );
+  if (rows.length === 0) return null;
+  if (rows[0].phase === "FINAL" || rows[0].phase === "ABANDONED") return null;
+  return { userId: appUser.id, tournamentId };
 }
 
 export const POST = createTokenBrokerHandler({
   authorize,
   onDegraded: (reason) =>
     console.error(`[realtime/token] degraded rate-limit key: ${reason}`),
-  // TODO(audit): append TOKEN_MINTED to session_events once non-lobby
-  // tournaments exist; lobby mints only reach the process log.
   onMint: async (grant: MintGrant) => {
-    console.log(
-      `[realtime/token] TOKEN_MINTED user=${grant.userId} tournament=${grant.tournamentId}`,
+    if (grant.tournamentId === "lobby") {
+      console.log(`[realtime/token] TOKEN_MINTED (lobby) user=${grant.userId}`);
+      return;
+    }
+    // Atomic audit append: seq comes from the same version counter that
+    // serializes state transitions (single statement, no read-modify-write).
+    await query(
+      `WITH bump AS (
+         UPDATE tournaments SET version = version + 1
+         WHERE id = $1
+         RETURNING version
+       )
+       INSERT INTO session_events (tournament_id, seq, type, payload)
+       SELECT $1, version, 'TOKEN_MINTED', $2::jsonb FROM bump`,
+      [grant.tournamentId, JSON.stringify({ userId: grant.userId })],
     );
   },
 });
