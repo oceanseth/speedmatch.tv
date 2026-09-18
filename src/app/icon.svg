@@ -1,12 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
   <title>SpeedMatch</title>
-  <defs>
-    <linearGradient id="spark" x1="10" y1="12" x2="53" y2="51" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#ff5da2"/>
-      <stop offset="1" stop-color="#a05dff"/>
-    </linearGradient>
-  </defs>
   <rect width="64" height="64" rx="16" fill="#0b0616"/>
-  <path d="M32 53 12.5 34C6.2 27.8 7.4 17 14.6 13.2 21 9.8 27.1 12.8 32 18c4.9-5.2 11-8.2 17.4-4.8 7.2 3.8 8.4 14.6 2.1 20.8Z" fill="url(#spark)"/>
-  <path d="m35 16-13 20h10l-4 15 16-24H34Z" fill="#fff"/>
+  <path d="M10 15c0-3 3-4 5-2l12 16c2 2 2 4 0 6L15 51c-2 2-5 1-5-2Z" fill="#ff5da2"/>
+  <path d="M54 15c0-3-3-4-5-2L37 29c-2 2-2 4 0 6l12 16c2 2 5 1 5-2Z" fill="#b08aff"/>
 </svg>
