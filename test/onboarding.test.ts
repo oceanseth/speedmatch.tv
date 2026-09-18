@@ -88,3 +88,18 @@ test("David's regression profile: control phrases and vagueness never become fac
   assert.equal(r.answers.funFact, undefined);
   assert.equal(r.nextField, "funFact");
 });
+
+test("Opus #26 fixtures: category answers, self-descriptions, and mid-sentence 'stop'", async () => {
+  // "I want a person" answers the category question and must NOT poison lookingFor.
+  let r = await (await onboard({ answers: { displayName: "David" }, field: "seeking", message: "I want a person" })).json();
+  assert.equal(r.answers.seeking, "people");
+  assert.equal(r.answers.lookingFor, undefined);
+  // "I'm a designer looking for investors" is a self-description, not a name.
+  r = await (await onboard({ answers: {}, field: "seeking", message: "I'm a designer looking for investors, a person" })).json();
+  assert.equal(r.answers.displayName, undefined);
+  assert.ok(r.answers.lookingFor.includes("investors"));
+  // A real answer containing "stop" must not be deflected as a control phrase.
+  const base = { displayName: "Seth", seeking: "places" };
+  r = await (await onboard({ answers: base, field: "lookingFor", message: "somewhere I can stop and think" })).json();
+  assert.equal(r.answers.lookingFor, "somewhere I can stop and think");
+});

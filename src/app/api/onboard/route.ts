@@ -147,6 +147,23 @@ function questionFor(
 const CONTROL_RE =
   /\b(let me (speak|talk|finish|answer)|wait until i answer|you should wait|hold on|hang on|one (sec|second|moment)|stop( talking| it)?|can you hear me|shut up|be quiet|slow down|start over)\b/i;
 
+/**
+ * A control phrase is an UTTERANCE, not a substring: "somewhere I can stop
+ * and think" is a real answer, not a request to stop (Opus #26 finding 3).
+ * Strategy: strip every control-phrase match and conversational filler; if
+ * almost nothing remains, the message was control through and through —
+ * which also catches David's stuttered "Let me speak. You, you, you
+ * should, you should wait until I answer."
+ */
+function isControlUtterance(msg: string): boolean {
+  if (!CONTROL_RE.test(msg)) return false;
+  const residue = msg
+    .replace(new RegExp(CONTROL_RE.source, "gi"), " ")
+    .replace(/\b(you|i|me|we|it|should|would|please|now|then|just|really|can|could|will|wait|until|answer|ok|okay|so|and|uh|um)\b/gi, " ")
+    .replace(/[^A-Za-z]/g, "");
+  return residue.length <= 6;
+}
+
 // Contentless answers that identify nothing to pitch against ("The best.").
 const VAGUE_RE =
   /^(the\s+|a\s+|an\s+)?(best|good|great|nice|cool|fine|anything|whatever|something|idk|i don'?t know)(\s+one)?[.!\s]*$/i;
@@ -177,6 +194,9 @@ function nextMissing(answers: Partial<OnboardingProfile>): OnboardField | null {
 const NAME_STOPWORDS = new Set([
   "looking", "searching", "trying", "hoping", "wanting", "going", "gonna",
   "here", "just", "not", "really", "interested", "sorry", "good", "fine",
+  // Articles/prepositions: "I'm a designer", "I'm from Seattle" are
+  // self-descriptions, not names (Opus #26 finding 2).
+  "a", "an", "the", "from", "with", "in", "at", "on",
 ]);
 
 const NAME_RE =
@@ -224,8 +244,14 @@ function extractExtras(
     const m = msg.match(
       /(?:looking for|want to find|searching for|hoping to find|i want|i need)\s+(.{8,})/i,
     );
-    if (m?.[1]) {
-      answers.lookingFor = m[1].trim();
+    const goal = m?.[1]?.trim();
+    // "I want a person" answering the CATEGORY question is a category, not
+    // a goal — a bare category term must not poison lookingFor (Opus #26
+    // finding 1: fired for "a person"/"a product" but not "a place").
+    const bareCategory =
+      /^(a\s+|an\s+|the\s+)?(person|people|product|products|place|places|someone|somebody|something)[.!\s]*$/i;
+    if (goal && !bareCategory.test(goal)) {
+      answers.lookingFor = goal;
       captured.push("lookingFor");
     }
   }
@@ -273,7 +299,7 @@ export async function POST(req: Request) {
   if (body.field && typeof body.message === "string") {
     const msg = sanitizeAnswer(body.message);
     if (msg) {
-      if (CONTROL_RE.test(msg)) {
+      if (isControlUtterance(msg)) {
         deflect = "Sorry — go ahead, I'm listening. ";
       } else if (isDuplicateAnswer(msg, answers)) {
         deflect = "I've already got that one down. ";
