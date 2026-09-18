@@ -181,11 +181,38 @@ export function isCloudflareIp(ip: string): boolean {
  * attacker typing CF-Connecting-IP therefore gets keyed by their real IP —
  * the header is ignored because their peer address isn't Cloudflare's.
  */
-export function defaultClientKey(req: Request): string {
+/**
+ * Called when the key derivation degrades (empty peer, or CF header present
+ * behind a non-Cloudflare peer). If this fires in production the per-IP
+ * limiter is collapsing toward one shared key — alarm, don't ignore.
+ * Empirically verified 2026-09-18 on InstaCloud: BOTH ingress paths (custom
+ * domain and the compute edge URL) transit Cloudflare workers, client-typed
+ * XFF is stripped wholesale (rightmost hop is always a CF egress IP), and
+ * spoofed CF-Connecting-IP is rejected by Cloudflare with error 1000 — so
+ * this should never fire until the platform changes underneath us.
+ */
+export type DegradedKeyReason = 'no-peer' | 'cf-header-non-cf-peer';
+let warnedDegraded = false;
+
+export function defaultClientKey(
+  req: Request,
+  onDegraded?: (reason: DegradedKeyReason) => void,
+): string {
   const hops = req.headers.get('x-forwarded-for')?.split(',') ?? [];
   const peer = hops.at(-1)?.trim() || '';
   const cf = req.headers.get('cf-connecting-ip');
   if (cf && peer && isCloudflareIp(peer)) return cf.trim();
+  const reason: DegradedKeyReason | null =
+    cf && peer ? 'cf-header-non-cf-peer' : !peer ? 'no-peer' : null;
+  if (reason) {
+    onDegraded?.(reason);
+    if (!warnedDegraded) {
+      warnedDegraded = true;
+      console.warn(
+        `[tokenBroker] degraded rate-limit key (${reason}) — per-IP limiting may be collapsing to a shared key; check edge XFF behavior`,
+      );
+    }
+  }
   return peer || 'unknown';
 }
 

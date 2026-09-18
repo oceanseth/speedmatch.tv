@@ -148,6 +148,25 @@ test('defaultClientKey honors CF-Connecting-IP only when the peer IS Cloudflare'
   assert.equal(defaultClientKey(new Request('http://x/')), 'unknown');
 });
 
+test('defaultClientKey reports degraded derivations', () => {
+  const reasons: string[] = [];
+  defaultClientKey(new Request('http://x/'), (r) => reasons.push(r));
+  defaultClientKey(
+    new Request('http://x/', {
+      headers: { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '203.0.113.7' },
+    }),
+    (r) => reasons.push(r),
+  );
+  // Healthy path must NOT report.
+  defaultClientKey(
+    new Request('http://x/', {
+      headers: { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '104.18.3.81' },
+    }),
+    (r) => reasons.push(r),
+  );
+  assert.deepEqual(reasons, ['no-peer', 'cf-header-non-cf-peer']);
+});
+
 test('handler: unauthenticated junk cannot exhaust the mint budget', async () => {
   const handler = createTokenBrokerHandler({
     authorize: async (req) =>
