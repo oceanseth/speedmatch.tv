@@ -75,6 +75,8 @@ export async function applyEvent(
 ): Promise<TournamentRow> {
   const next = advance(row.state, event, now); // TransitionError propagates
   return withTransaction(async (client) => {
+    // UPDATE takes the row lock; every seq allocation in this transaction
+    // is therefore serialized with appendEvent's FOR UPDATE path.
     const updated = await client.query(
       `UPDATE tournaments SET state = $1::jsonb, version = version + 1
        WHERE id = $2 AND version = $3
@@ -206,24 +208,25 @@ export async function eventsSince(
   );
 }
 
-/** Append a non-state event (chat, audit); never touches version. */
+/**
+ * Append a non-state event (chat, audit); never touches version. Takes the
+ * tournaments row lock FIRST so it serializes with applyEvent's
+ * transaction: without it, two MAX+1 computations interleave, the loser's
+ * 23505 fires inside applyEvent's txn, and a user's decision is rolled
+ * back because a spectator typed at the same instant (Opus #27 finding 3).
+ */
 export async function appendEvent(
   id: string,
   type: string,
   payload: unknown,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      await query(
-        `INSERT INTO session_events (tournament_id, seq, type, payload)
-         SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3::jsonb
-         FROM session_events WHERE tournament_id = $1`,
-        [id, type, JSON.stringify(payload)],
-      );
-      return;
-    } catch (err) {
-      if ((err as { code?: string }).code !== "23505") throw err;
-    }
-  }
-  throw new Error("event append lost after seq conflicts");
+  await withTransaction(async (client) => {
+    await client.query(`SELECT 1 FROM tournaments WHERE id = $1 FOR UPDATE`, [id]);
+    await client.query(
+      `INSERT INTO session_events (tournament_id, seq, type, payload)
+       SELECT $1, COALESCE(MAX(seq), 0) + 1, $2, $3::jsonb
+       FROM session_events WHERE tournament_id = $1`,
+      [id, type, JSON.stringify(payload)],
+    );
+  });
 }

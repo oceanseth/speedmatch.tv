@@ -1,6 +1,7 @@
+import { createHmac, randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { stripSpeechControlTokens } from "@speedmatch/server/onboarding";
-import { RateLimiter } from "@speedmatch/server/boson";
+import { RateLimiter, defaultClientKey } from "@speedmatch/server/boson";
 import {
   loadTournament,
   appendEvent,
@@ -12,9 +13,26 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CHAT_MAX_CHARS = 280;
 
-// Per-user-per-round cap (Opus checklist). Keyed user:tournament:round;
-// per-process like every limiter here.
+// Per-sender-per-round cap, PLUS a per-IP-per-tournament cap: the sender id
+// is a self-issued cookie (one GET /api/session rotates it), so the IP
+// dimension — the one the client can't choose — is what actually bounds a
+// public show's chat (Opus #27 finding 2).
 const chatLimiter = new RateLimiter(10);
+const chatIpLimiter = new RateLimiter(30);
+
+// The broadcast payload must never carry the raw sender id: for anonymous
+// viewers that IS their sm_sid bearer cookie, and /events hands the payload
+// to every spectator (Opus #27 finding 1). A per-tournament HMAC gives a
+// stable in-show pseudonym instead. Key falls back to a process-random
+// value when the env secret is absent (pseudonyms merely reset on restart).
+const PSEUDONYM_KEY =
+  process.env.BETTER_AUTH_SECRET ?? randomBytes(32).toString("hex");
+function pseudonym(tournamentId: string, senderId: string): string {
+  return createHmac("sha256", PSEUDONYM_KEY)
+    .update(`${tournamentId}:${senderId}`)
+    .digest("hex")
+    .slice(0, 12);
+}
 
 const notFound = () => NextResponse.json({ error: "not_found" }, { status: 404 });
 
@@ -63,11 +81,19 @@ export async function POST(
   if (!text) return NextResponse.json({ error: "empty" }, { status: 400 });
 
   const round = row.state.current?.round ?? -1;
-  if (!chatLimiter.allow(`${senderId}:${id}:${round}`)) {
+  if (
+    !chatLimiter.allow(`${senderId}:${id}:${round}`) ||
+    !chatIpLimiter.allow(`${defaultClientKey(req)}:${id}`)
+  ) {
     return NextResponse.json({ error: "rate_limited" }, { status: 429 });
   }
 
   const displayName = user?.displayName ?? "guest";
-  await appendEvent(id, "CHAT", { senderId, displayName, text, round });
+  await appendEvent(id, "CHAT", {
+    sender: pseudonym(id, senderId),
+    displayName,
+    text,
+    round,
+  });
   return NextResponse.json({ ok: true }, { headers: { "cache-control": "no-store" } });
 }

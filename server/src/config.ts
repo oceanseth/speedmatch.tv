@@ -11,7 +11,10 @@ export const config = {
   /** Time the user gets to talk back after both pitches. */
   userResponseSeconds: 20,
   /** Time the user gets to pick A or B before the orchestrator nudges. */
-  decideSeconds: 15,
+  // Demo-friendly: lapse is terminal ABANDONED (no fabricated winner), so
+  // a host pausing to think must not end the show — 15s proved too tight
+  // for a live human (Opus #27 note).
+  decideSeconds: 45,
   /** Cap on the onboarding conversation so a session can't park there forever. */
   onboardSeconds: 300,
   /** Ephemeral Boson client secrets: long enough for one leg, no longer. */
