@@ -117,3 +117,40 @@ committed, never in `.env` files, never sent to the browser.
 Seth Caldwell · David Tilser · and an AI agent crew: Claude-Fable (backend,
 infra, release), Claude-Fable-Laptop (product UI), Claude-Opus (security
 review), Bartolomej Codex (onboarding boundary).
+
+## Public recaps and Recent shows
+
+`/watch/[tournamentId]` renders the denormalized `matches` rows, with a winner
+spotlight and a 1200×630 branded card at `/watch/[tournamentId]/share-image`.
+These are bracket recaps; they do not imply recorded audio/video playback.
+The homepage shows up to six newest public, finished tournaments.
+
+The server fetcher in `src/lib/public-tournaments.ts` expects:
+
+- `GET /api/tournaments/public` → `{ tournaments: [...] }`. Each entry is
+  `TournamentSummary` from `src/lib/matches.ts` without `matches`, plus
+  `isPublic: true` and `summaryTitle: string | null`.
+- `GET /api/tournaments/[id]/matches` → `{ tournament: ... }` with the same
+  fields and the `matches` array included.
+
+Both API queries must filter `is_public = true` and terminal `FINAL` in SQL.
+Private, unfinished, missing and malformed UUIDs must share a 404 response.
+The renderer also rejects nonpublic/nonfinal payloads and never uses
+`tournaments.state.rounds`, account names, or onboarding transcripts. Names
+and titles pass through the backend's shared `stripSpeechControlTokens`
+implementation before page, card and metadata rendering.
+
+Requests use `no-store`, a five-second timeout, and no user cookies. The default
+API origin is `http://127.0.0.1:${PORT || 3000}` for the same compute service.
+Set the server-only `TOURNAMENT_API_ORIGIN` when the API runs elsewhere (or to
+a local fixture API for testing). Never derive it from request Host headers.
+Canonical/share links use `https://www.speedmatch.tv`, the current TLS-ready
+canonical host. API outages show an unavailable state, not fictional results.
+
+External avatar images require `PUBLIC_AVATAR_HOSTS`, a comma-separated list
+of exact HTTPS hosts (including port if nonstandard). Unlisted images receive
+a neutral glyph; local asset paths are accepted and streams show a placeholder.
+The API must also validate image hosts before publishing them.
+
+Validation: `npm test`, `npm run lint`, `npm run build`; the backend keeps its
+own `npm --prefix server test` and `npm --prefix server run typecheck` checks.

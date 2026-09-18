@@ -11,15 +11,15 @@ export default function Header() {
           <span className="brand-tv" aria-hidden="true">.tv</span>
         </Link>
         <nav className="flex items-center gap-5 text-sm text-muted">
-          <a href="#live" className="hidden hover:text-foreground sm:block">
+          <Link href="/#live" className="hidden hover:text-foreground sm:block">
             Live now
-          </a>
-          <a
-            href="#how-it-works"
+          </Link>
+          <Link
+            href="/#how-it-works"
             className="hidden hover:text-foreground sm:block"
           >
             How it works
-          </a>
+          </Link>
           <Link href="/account/matches" className="hidden hover:text-foreground sm:block">
             My Matches
           </Link>
