@@ -152,7 +152,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad request" }, { status: 400 });
     const cleaned = a.interests
       .filter((i): i is string => typeof i === "string")
-      .map(sanitizeAnswer)
+      .map((i) => sanitizeAnswer(i))
       .filter(Boolean);
     if (cleaned.length > 0) answers.interests = cleaned;
   }

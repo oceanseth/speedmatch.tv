@@ -75,7 +75,7 @@ test('speechLineClamped backstops literal-only overflow at the cap', () => {
 
 test('buildSpeechRequest validates voice against presets and registered ids', () => {
   const input = trustedSpeechLiteral('hi');
-  for (const ok of ['chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver', 'belinda', 'voice_Ab1_-x']) {
+  for (const ok of ['chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver', 'berlinda', 'voice_Ab1_-x']) {
     assert.equal(buildSpeechRequest({ input, voice: ok }).voice, ok);
   }
   for (const bad of ['', 'Jake', 'voice_', 'voice_a b', 'jake; drop', '<|sfx:boo|>']) {

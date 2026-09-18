@@ -95,12 +95,12 @@ export const SPEECH_INPUT_MAX = 2000;
 
 /**
  * Boson preset voices (see personas.voice in migrations/001_init.sql).
- * `belinda` appears in Boson's own API samples though not their preset
- * table — included so a persona seeded with it fails at seed review, not at
- * speak time on stage.
+ * `berlinda` is spelled per docs.boson.ai/models/higgs-tts/voices.md (twice
+ * there; Opus re-verified) — included so a persona seeded with it fails at
+ * seed review, not at speak time on stage.
  */
 const VOICE_PRESETS = new Set([
-  'chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver', 'belinda',
+  'chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver', 'berlinda',
 ]);
 /** Registered voices from POST /v1/audio/voices. */
 const REGISTERED_VOICE_RE = /^voice_[A-Za-z0-9_-]+$/;
