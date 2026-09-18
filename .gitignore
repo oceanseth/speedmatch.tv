@@ -20,3 +20,6 @@ skills-lock.json
 # Agent tool state (installed skills, local settings)
 .codex/
 .claude/settings.json
+
+# Node
+node_modules/
