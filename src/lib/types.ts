@@ -22,6 +22,8 @@ export interface LiveSession {
   /** 0-based round within the bracket. */
   roundIndex: number;
   totalRounds: number;
+  /** Epoch ms when the current 15s pitch leg started. */
+  legStartedAt: number;
   /** Epoch ms when the current 15s pitch leg ends (maps to the state machine's deadlineAt). */
   legEndsAt: number;
   /** Consented display pseudonym — never an account name. */

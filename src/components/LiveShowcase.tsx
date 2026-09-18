@@ -33,15 +33,21 @@ function ContestantRow({
       }`}
     >
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-card text-xl">
-        {contestant.avatar.kind === "emoji" ? (
-          contestant.avatar.value
-        ) : (
+        {contestant.avatar.kind === "emoji" && contestant.avatar.value}
+        {contestant.avatar.kind === "image" && (
+          // Hosts must be allowlisted server-side before user-supplied
+          // URLs reach this public feed (viewer-IP beacon otherwise).
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={contestant.avatar.value}
             alt=""
             className="h-9 w-9 rounded-md object-cover"
           />
+        )}
+        {contestant.avatar.kind === "stream" && (
+          // Placeholder until Higgs Avatar fMP4 playback lands with the
+          // session UI.
+          <span className="live-dot">🎥</span>
         )}
       </div>
       <div className="min-w-0 flex-1">
@@ -72,6 +78,10 @@ function SessionCard({
   msLeft: number;
 }) {
   const secondsLeft = Math.max(0, Math.ceil(msLeft / 1000));
+  // When the snapshot's leg has ended we don't know who pitches next
+  // until the next poll — show neither as pitching rather than guessing
+  // wrong (legs may stall or a match may be deciding).
+  const legRunning = msLeft > 0;
   return (
     <div className="rounded-xl border border-card-border bg-card p-3 transition hover:border-brand-purple/60">
       <div className="mb-2 flex items-center justify-between text-xs text-muted">
@@ -84,14 +94,14 @@ function SessionCard({
       <div className="flex flex-col gap-1">
         <ContestantRow
           contestant={session.contestants[0]}
-          pitching={session.nowPitchingIndex === 0}
+          pitching={legRunning && session.nowPitchingIndex === 0}
         />
         <div className="py-0.5 text-center text-[10px] font-bold uppercase tracking-widest text-muted">
-          vs
+          {legRunning ? "vs" : "next pitch starting…"}
         </div>
         <ContestantRow
           contestant={session.contestants[1]}
-          pitching={session.nowPitchingIndex === 1}
+          pitching={legRunning && session.nowPitchingIndex === 1}
         />
       </div>
       <div className="mt-3 flex items-center justify-between">
@@ -176,7 +186,10 @@ export default function LiveShowcase() {
                   <SessionCard
                     key={s.id}
                     session={s}
-                    msLeft={((s.legEndsAt - serverNow) % PITCH_LEG_MS + PITCH_LEG_MS) % PITCH_LEG_MS}
+                    msLeft={Math.min(
+                      PITCH_LEG_MS,
+                      Math.max(0, s.legEndsAt - serverNow),
+                    )}
                   />
                 ))}
                 {catSessions.length === 0 && (

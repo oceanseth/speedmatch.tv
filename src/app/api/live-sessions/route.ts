@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
 // no server state needed.
 type SeedMatch = Omit<
   LiveSession,
-  "legEndsAt" | "nowPitchingIndex" | "viewers" | "isPublic"
+  "legStartedAt" | "legEndsAt" | "nowPitchingIndex" | "viewers" | "isPublic"
 >;
 
 const c = (name: string, emoji: string, pitchSnippet: string): Contestant => ({
@@ -112,6 +112,7 @@ export function GET() {
         pitchSnippet: ct.pitchSnippet.slice(0, PITCH_SNIPPET_MAX),
       })) as [Contestant, Contestant],
       nowPitchingIndex: (legNumber % 2) as 0 | 1,
+      legStartedAt: legNumber * PITCH_LEG_MS - i * 5_000,
       legEndsAt: (legNumber + 1) * PITCH_LEG_MS - i * 5_000,
       viewers: 12 + ((Math.floor(now / 10_000) + i * 7) % 48),
       isPublic: true,
