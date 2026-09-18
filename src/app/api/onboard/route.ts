@@ -1,0 +1,229 @@
+import { NextResponse } from "next/server";
+import {
+  sanitizeAnswer,
+  type OnboardField,
+  type OnboardRequest,
+  type OnboardResponse,
+  type OnboardingProfile,
+} from "../../../lib/onboarding";
+import type { Category } from "../../../lib/types";
+
+export const dynamic = "force-dynamic";
+
+// Scripted host flow, stateless per request: the client holds the answers
+// collected so far, the server decides the next question and sanitizes
+// every user-supplied value. Swaps for the Higgs Realtime conversation
+// later without changing the page.
+const ORDER: OnboardField[] = [
+  "displayName",
+  "seeking",
+  "lookingFor",
+  "interests",
+  "funFact",
+];
+
+const CATEGORIES: Category[] = ["people", "products", "places"];
+
+// Every legit body is a handful of short answers; anything bigger is abuse.
+// Sanitization is regex work, so the cap must run before any parsing/
+// sanitizing — this endpoint is unauthenticated, and once it fronts Higgs
+// Realtime it becomes a spend endpoint that also needs the broker's
+// rate limiter in front of it.
+const MAX_BODY_BYTES = 8_192;
+const MAX_INTERESTS = 3;
+
+/**
+ * Read the body without ever buffering more than maxBytes: reject on the
+ * Content-Length header when present, and count decoded bytes (not UTF-16
+ * code units) as chunks arrive, cancelling the stream the moment the cap
+ * is crossed — a chunked body with an absent or lying header still can't
+ * make us hold more than one chunk past the limit. Returns null when the
+ * cap is exceeded.
+ */
+async function readBodyCapped(
+  req: Request,
+  maxBytes: number,
+): Promise<string | null> {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+  const reader = req.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  // Manual concat keeps this runtime-portable (Buffer would pin us to Node).
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+// The host literally asks "a person, a product, or a place?" — match the
+// natural answers, not just the plural table names.
+const CATEGORY_SYNONYMS: Record<Category, string[]> = {
+  people: ["people", "person", "human", "someone", "somebody", "date"],
+  products: ["products", "product", "gadget", "thing", "item", "something to buy"],
+  places: ["places", "place", "destination", "city", "location", "somewhere", "trip", "travel"],
+};
+
+function parseCategory(msg: string): Category | undefined {
+  const m = msg.toLowerCase();
+  return CATEGORIES.find((c) => CATEGORY_SYNONYMS[c].some((s) => m.includes(s)));
+}
+
+function questionFor(
+  field: OnboardField,
+  answers: Partial<OnboardingProfile>,
+): { reply: string; suggestions?: string[] } {
+  const name = answers.displayName ?? "there";
+  switch (field) {
+    case "displayName":
+      return {
+        reply:
+          "Hey! I'm your host — I'll run your matches and keep everyone honest on the clock. Before we start: what should I call you?",
+      };
+    case "seeking":
+      return {
+        reply: `Nice to meet you, ${name}. What kind of match are we hunting for today — a person, a product, or a place?`,
+        suggestions: ["People", "Products", "Places"],
+      };
+    case "lookingFor":
+      return {
+        reply:
+          "Got it. Tell me in a sentence what you're actually looking for — the contestants will hear a summary of this, so make it count.",
+      };
+    case "interests":
+      return {
+        reply:
+          "What are two or three things you're into right now? Comma-separated is fine — this helps contestants pitch to you, not at you.",
+      };
+    case "funFact":
+      return {
+        reply:
+          "Last one: give me a fun fact about you. The good pitches will pick up on it.",
+      };
+  }
+}
+
+function nextMissing(answers: Partial<OnboardingProfile>): OnboardField | null {
+  for (const f of ORDER) {
+    if (answers[f] === undefined) return f;
+  }
+  return null;
+}
+
+export async function POST(req: Request) {
+  let body: OnboardRequest;
+  try {
+    const raw = await readBodyCapped(req, MAX_BODY_BYTES);
+    if (raw === null)
+      return NextResponse.json({ error: "payload too large" }, { status: 413 });
+    body = JSON.parse(raw) as OnboardRequest;
+  } catch {
+    return NextResponse.json({ error: "bad request" }, { status: 400 });
+  }
+
+  // Re-sanitize everything the client sent; the client's copy is a
+  // convenience, never a trusted value.
+  const answers: Partial<OnboardingProfile> = {};
+  const a = body.answers ?? {};
+  if (typeof a.displayName === "string")
+    answers.displayName = sanitizeAnswer(a.displayName).slice(0, 40) || undefined;
+  if (CATEGORIES.includes(a.seeking as Category))
+    answers.seeking = a.seeking as Category;
+  if (typeof a.lookingFor === "string")
+    answers.lookingFor = sanitizeAnswer(a.lookingFor) || undefined;
+  if (Array.isArray(a.interests)) {
+    // Bound the array before any sanitizing runs — a huge array here is
+    // one regex pass per element on an unauthenticated endpoint.
+    if (a.interests.length > MAX_INTERESTS)
+      return NextResponse.json({ error: "bad request" }, { status: 400 });
+    const cleaned = a.interests
+      .filter((i): i is string => typeof i === "string")
+      .map(sanitizeAnswer)
+      .filter(Boolean);
+    if (cleaned.length > 0) answers.interests = cleaned;
+  }
+  if (typeof a.funFact === "string")
+    answers.funFact = sanitizeAnswer(a.funFact) || undefined;
+
+  // Apply the new message to the field it answers.
+  if (body.field && typeof body.message === "string") {
+    const msg = sanitizeAnswer(body.message);
+    if (msg) {
+      switch (body.field) {
+        case "displayName":
+          answers.displayName = msg.slice(0, 40);
+          break;
+        case "seeking": {
+          const cat = parseCategory(msg);
+          if (cat) answers.seeking = cat;
+          break;
+        }
+        case "lookingFor":
+          answers.lookingFor = msg;
+          break;
+        case "interests": {
+          const list = msg
+            .split(/[,;]| and /i)
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .slice(0, MAX_INTERESTS);
+          // "," sanitizes to "," and splits to nothing — an empty list is
+          // not an answer, so leave the field unset and re-ask.
+          if (list.length > 0) answers.interests = list;
+          break;
+        }
+        case "funFact":
+          answers.funFact = msg;
+          break;
+      }
+    }
+  }
+
+  const nextField = nextMissing(answers);
+  if (nextField === null) {
+    const profile = answers as OnboardingProfile;
+    const res: OnboardResponse = {
+      reply: `Perfect, ${profile.displayName} — I've got what I need. I'll brief the contestants with a summary (never your exact words). Ready to open the bracket?`,
+      nextField: null,
+      done: true,
+      answers,
+      profile,
+    };
+    return NextResponse.json(res, { headers: { "Cache-Control": "no-store" } });
+  }
+
+  // Re-ask when the message didn't parse (e.g. category not recognized).
+  const q = questionFor(nextField, answers);
+  const retry =
+    body.field === nextField
+      ? nextField === "seeking"
+        ? {
+            reply:
+              "I can work with people, products, or places — which one is it today?",
+            suggestions: ["People", "Products", "Places"],
+          }
+        : q
+      : q;
+
+  const res: OnboardResponse = {
+    ...retry,
+    nextField,
+    done: false,
+    answers,
+  };
+  return NextResponse.json(res, { headers: { "Cache-Control": "no-store" } });
+}
