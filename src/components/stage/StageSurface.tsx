@@ -11,6 +11,8 @@ import type {
   TournamentStateSnapshot,
 } from "../../lib/stage";
 import { MATCH_PHASES, PHASE_LABELS } from "../../lib/stage";
+import type { BroadcastChunkRef } from "../../lib/broadcast";
+import BroadcastViewer from "./BroadcastViewer";
 
 interface Props {
   waitingForTournament?: boolean;
@@ -31,6 +33,13 @@ interface Props {
   onDecide: (winner: "A" | "B") => void;
   decidePending: boolean;
   mediaError: string | null;
+  /** Camera chunks are actively being uploaded for spectators. */
+  broadcasting: boolean;
+  broadcastNotice: string | null;
+  /** Spectator-facing chunk manifest from the events poll. */
+  manifest: BroadcastChunkRef[];
+  onBroadcastStart: () => void;
+  onBroadcastStop: (revoke: boolean) => void;
 }
 
 function ContestantTile({
@@ -82,6 +91,11 @@ export default function StageSurface({
   onDecide,
   decidePending,
   mediaError,
+  broadcasting,
+  broadcastNotice,
+  manifest,
+  onBroadcastStart,
+  onBroadcastStop,
 }: Props) {
   const phase = state?.phase ?? slot?.phase ?? null;
   const currentMatch =
@@ -95,9 +109,9 @@ export default function StageSurface({
   return (
     <div className="overflow-hidden rounded-xl border border-card-border bg-card">
       <div className="relative aspect-video bg-background">
-        {/* Main tile: your camera when you're live; otherwise the seeker
-            placeholder. v1 scoping: webcam renders in the studio only —
-            broadcasting frames to spectators is a later pass (needs an SFU). */}
+        {/* Main tile: your camera when you're live; the stage-holder's
+            broadcast for spectators when they opted in (chunk manifest is
+            non-empty); otherwise the seeker placeholder. */}
         <video
           ref={videoRef}
           muted
@@ -105,7 +119,10 @@ export default function StageSurface({
           autoPlay
           className={`h-full w-full object-cover ${onStage && live ? "" : "hidden"}`}
         />
-        {!(onStage && live) && (
+        {!(onStage && live) && manifest.length > 0 && (
+          <BroadcastViewer manifest={manifest} />
+        )}
+        {!(onStage && live) && manifest.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
             {slot ? (
               <>
@@ -118,7 +135,7 @@ export default function StageSurface({
                 </div>
                 <p className="max-w-sm px-4 text-sm text-muted">
                   {onStage
-                    ? "This is your stage. Go live to share your camera and talk to the host."
+                    ? "This is your stage. Go live to start your camera and talk to the host — broadcasting to viewers stays off until you turn it on."
                     : "Talking to the host over voice — follow along in chat and the bracket."}
                 </p>
               </>
@@ -143,7 +160,7 @@ export default function StageSurface({
         )}
 
         {onStage && (
-          <div className="absolute right-3 top-3 flex gap-2">
+          <div className="absolute right-3 top-3 flex flex-wrap justify-end gap-2">
             {!live ? (
               <button
                 type="button"
@@ -153,19 +170,62 @@ export default function StageSurface({
                 Go live — camera & mic
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={onLeave}
-                className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
-              >
-                Leave stage
-              </button>
+              <>
+                {!broadcasting ? (
+                  <button
+                    type="button"
+                    onClick={onBroadcastStart}
+                    className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-4 py-1.5 text-sm font-semibold text-white shadow-lg transition hover:opacity-90"
+                  >
+                    Broadcast camera to viewers
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onBroadcastStop(false)}
+                      className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
+                    >
+                      Stop broadcast
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onBroadcastStop(true)}
+                      className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
+                      title="Stop broadcasting and delete the video uploaded so far"
+                    >
+                      Stop & delete video
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={onLeave}
+                  className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
+                >
+                  Leave stage
+                </button>
+              </>
             )}
           </div>
         )}
-        {mediaError && (
+        {/* Honest broadcast state whenever the camera is on: either an
+            explicit local-only note or a hard-to-miss REC indicator. */}
+        {onStage && live && (
+          broadcasting ? (
+            <div className="absolute left-3 top-3 flex items-center gap-2 rounded-full bg-red-500/85 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white">
+              <span className="live-dot h-1.5 w-1.5 rounded-full bg-white" />
+              Rec — viewers can see you
+            </div>
+          ) : (
+            <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white backdrop-blur">
+              Local preview — viewers can’t see your camera
+            </div>
+          )
+        )}
+        {(mediaError ?? broadcastNotice) && (
           <div className="absolute inset-x-0 top-0 bg-red-500/80 px-4 py-1.5 text-center text-xs font-medium text-white">
-            {mediaError}
+            {mediaError ?? broadcastNotice}
           </div>
         )}
       </div>

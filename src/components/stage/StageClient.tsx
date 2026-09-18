@@ -15,6 +15,12 @@ import {
   type TournamentStateSnapshot,
 } from "../../lib/stage";
 import { RealtimeVoiceSession, type RealtimeStatus } from "../../lib/realtime";
+import {
+  BroadcastRecorder,
+  foldManifest,
+  httpBroadcastTransport,
+  type BroadcastChunkRef,
+} from "../../lib/broadcast";
 import StageSurface from "./StageSurface";
 import QueueRail from "./QueueRail";
 import ChatPanel, { type ChatMessage } from "./ChatPanel";
@@ -81,9 +87,13 @@ export default function StageClient({ category, tournamentId = null }: { categor
   const [caption, setCaption] = useState("");
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [decidePending, setDecidePending] = useState(false);
+  const [broadcasting, setBroadcasting] = useState(false);
+  const [broadcastNotice, setBroadcastNotice] = useState<string | null>(null);
+  const [manifest, setManifest] = useState<BroadcastChunkRef[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const rtSessionRef = useRef<RealtimeVoiceSession | null>(null);
+  const broadcastRef = useRef<BroadcastRecorder | null>(null);
   const captionClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -136,6 +146,7 @@ export default function StageClient({ category, tournamentId = null }: { categor
     setTState(null);
     setEvents([]);
     setPersonas({});
+    setManifest([]);
   }
 
   // Events poll follows the focused tournament; the seq cursor lives in
@@ -157,6 +168,7 @@ export default function StageClient({ category, tournamentId = null }: { categor
         setEvents((prev) =>
           [...prev, ...res.data.events].slice(-MAX_EVENTS_KEPT),
         );
+        setManifest((prev) => foldManifest(prev, res.data.events));
       }
     };
     pollNowRef.current = () => void poll();
@@ -180,7 +192,19 @@ export default function StageClient({ category, tournamentId = null }: { categor
     myName.trim() !== "" &&
     snapshot.main.seeker === sanitizeAnswer(myName, { maxChars: 60 });
 
+  /** Local stop: uploaded chunks stay for replay per their server TTL.
+   * With `revoke`, consent is withdrawn and the server deletes them. */
+  const stopBroadcast = useCallback((revoke = false) => {
+    const rec = broadcastRef.current;
+    broadcastRef.current = null;
+    setBroadcasting(false);
+    if (!rec) return;
+    if (revoke) void rec.revoke();
+    else rec.stop();
+  }, []);
+
   const stopMedia = useCallback(() => {
+    stopBroadcast();
     rtSessionRef.current?.close();
     rtSessionRef.current = null;
     mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -189,7 +213,7 @@ export default function StageClient({ category, tournamentId = null }: { categor
     setLive(false);
     setRtStatus(null);
     setCaption("");
-  }, []);
+  }, [stopBroadcast]);
 
   useEffect(() => stopMedia, [stopMedia]);
   // Losing the stage (slot handed to someone else) ends the session;
@@ -233,6 +257,38 @@ export default function StageClient({ category, tournamentId = null }: { categor
           : "Couldn’t start the live session. Check the backend and try again.",
       );
     }
+  };
+
+  // Opt-in per stage-take: never started implicitly, and the recorder
+  // stops itself the moment a per-chunk mint is refused (stage lost).
+  const startBroadcast = () => {
+    if (!focusedTournamentId || !mediaStreamRef.current || broadcastRef.current)
+      return;
+    setBroadcastNotice(null);
+    const recorder = new BroadcastRecorder(
+      focusedTournamentId,
+      mediaStreamRef.current,
+      httpBroadcastTransport(),
+      {
+        onStatus: (status, reason) => {
+          if (status === "broadcasting") {
+            setBroadcasting(true);
+            return;
+          }
+          setBroadcasting(false);
+          if (broadcastRef.current === recorder) broadcastRef.current = null;
+          if (reason === "denied") {
+            setBroadcastNotice("Broadcast stopped — this stage is no longer yours.");
+          } else if (reason === "upload-failed") {
+            setBroadcastNotice("Broadcast stopped — uploads kept failing.");
+          } else if (reason === "recorder-failed") {
+            setBroadcastNotice("Broadcast stopped — camera recording failed.");
+          }
+        },
+      },
+    );
+    broadcastRef.current = recorder;
+    recorder.start();
   };
 
   const apply = async () => {
@@ -289,6 +345,11 @@ export default function StageClient({ category, tournamentId = null }: { categor
             onDecide={(w) => void decide(w)}
             decidePending={decidePending}
             mediaError={mediaError}
+            broadcasting={broadcasting}
+            broadcastNotice={broadcastNotice}
+            manifest={manifest}
+            onBroadcastStart={startBroadcast}
+            onBroadcastStop={stopBroadcast}
           />
 
           {/* Chat <-> live bracket toggle under the video surface. */}
