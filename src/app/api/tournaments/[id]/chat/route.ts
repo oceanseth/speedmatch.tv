@@ -25,8 +25,13 @@ const chatIpLimiter = new RateLimiter(30);
 // to every spectator (Opus #27 finding 1). A per-tournament HMAC gives a
 // stable in-show pseudonym instead. Key falls back to a process-random
 // value when the env secret is absent (pseudonyms merely reset on restart).
+// Dedicated key so rotating the auth secret doesn't reshuffle transcript
+// identities (Opus hygiene note); falls back through the auth secret to a
+// process-random value (pseudonyms merely reset on restart).
 const PSEUDONYM_KEY =
-  process.env.BETTER_AUTH_SECRET ?? randomBytes(32).toString("hex");
+  process.env.PSEUDONYM_KEY ??
+  process.env.BETTER_AUTH_SECRET ??
+  randomBytes(32).toString("hex");
 function pseudonym(tournamentId: string, senderId: string): string {
   return createHmac("sha256", PSEUDONYM_KEY)
     .update(`${tournamentId}:${senderId}`)
