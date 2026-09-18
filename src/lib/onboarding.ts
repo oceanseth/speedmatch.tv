@@ -33,6 +33,10 @@ export interface OnboardResponse {
   done: boolean;
   answers: Partial<OnboardingProfile>;
   profile?: OnboardingProfile;
+  /** Present on done. "saved" = persisted to the signed-in account;
+   * "anonymous" = no session to attach to (sign in to keep it);
+   * "failed" = the write blew up — retry, don't blame the user. */
+  saved?: "saved" | "anonymous" | "failed";
 }
 
 export const MAX_ANSWER_CHARS = 200;

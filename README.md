@@ -1,3 +1,11 @@
+<p align="center">
+  <a href="https://www.speedmatch.tv/pitch">
+    <img src="src/app/icon.svg" alt="SpeedMatch.tv logo" width="120" height="120" />
+  </a>
+</p>
+
+<h2 align="center"><a href="https://www.speedmatch.tv/pitch">Click to read our pitch deck</a></h2>
+
 # SpeedMatch.tv — 15 seconds to win you over
 
 **The world's first AI speed-dating game show.** Contestants aren't just people —
