@@ -9,8 +9,8 @@
  * PCM16@24kHz via `input_audio_buffer.append`; agent audio comes back as
  * PCM16 deltas and is scheduled onto an AudioContext. Server VAD owns
  * turn-taking; a `speech_started` event flushes local playback so the user
- * can barge in. The ephemeral key's TTL gates the handshake only — Boson
- * closes an invalid/expired key with code 3000, so on 3000 we re-mint and
+ * can barge in. Established-session survival past key expiry is unverified.
+ * Boson closes an invalid/expired key with code 3000, so on 3000 we re-mint and
  * reconnect (capped) instead of silently ending the session.
  */
 
@@ -27,6 +27,11 @@ export type RealtimeStatus =
   | "speaking"
   | "closed"
   | "error";
+
+export interface RealtimeConnectOptions {
+  /** Fixed application prompt, never an authorization or tournament-state boundary. */
+  instructions?: string;
+}
 
 export interface RealtimeCallbacks {
   onStatus?: (status: RealtimeStatus) => void;
@@ -90,6 +95,10 @@ export class RealtimeVoiceSession {
   private closed = false;
   private tournamentId = "";
   private reconnectAttempts = 0;
+  private started = false;
+  private abort = new AbortController();
+  private cancelOpen: (() => void) | null = null;
+  private options: RealtimeConnectOptions = {};
 
   constructor(private cb: RealtimeCallbacks = {}) {}
 
@@ -97,46 +106,73 @@ export class RealtimeVoiceSession {
    * `micStream` must come from a user gesture (autoplay policy) and stays
    * owned by the caller — we tap its audio track, we never stop it.
    */
-  async connect(tournamentId: string, micStream: MediaStream): Promise<void> {
+  async connect(tournamentId: string, micStream: MediaStream, options: RealtimeConnectOptions = {}): Promise<void> {
+    if (this.started || this.closed) throw new Error("Voice session already used");
+    this.started = true;
     this.tournamentId = tournamentId;
+    this.options = options;
     this.cb.onStatus?.("connecting");
-
-    const minted = await this.mint();
-
-    this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-    const workletUrl = URL.createObjectURL(
-      new Blob([WORKLET_SRC], { type: "text/javascript" }),
-    );
     try {
-      await this.ctx.audioWorklet.addModule(workletUrl);
-    } finally {
-      URL.revokeObjectURL(workletUrl);
+      // Resume before any network await can lose the initiating user gesture.
+      this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
+      await this.ctx.resume();
+      this.ensureOpen();
+      const workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "text/javascript" }));
+      try { await this.ctx.audioWorklet.addModule(workletUrl); }
+      finally { URL.revokeObjectURL(workletUrl); }
+      this.ensureOpen();
+      await this.connectSocket();
+      this.ensureOpen();
+      this.micSource = this.ctx.createMediaStreamSource(micStream);
+      this.micNode = new AudioWorkletNode(this.ctx, "pcm-capture");
+      this.micNode.port.onmessage = (e: MessageEvent<Float32Array>) => this.pushMic(e.data);
+      this.micSource.connect(this.micNode);
+      this.cb.onStatus?.("connected");
+    } catch (error) {
+      this.close();
+      throw error;
     }
+  }
 
-    await this.openSocket(minted);
-    this.configureSession();
+  private ensureOpen() {
+    if (this.closed) throw new Error("Voice session closed");
+  }
 
-    this.micSource = this.ctx.createMediaStreamSource(micStream);
-    this.micNode = new AudioWorkletNode(this.ctx, "pcm-capture");
-    this.micNode.port.onmessage = (e: MessageEvent<Float32Array>) =>
-      this.pushMic(e.data);
-    // Worklet output stays unrouted on purpose — no local mic monitor.
-    this.micSource.connect(this.micNode);
-
-    this.cb.onStatus?.("connected");
+  private async connectSocket(): Promise<void> {
+    while (true) {
+      this.ensureOpen();
+      const minted = await this.mint();
+      this.ensureOpen();
+      try {
+        await this.openSocket(minted);
+        this.ensureOpen();
+        this.configureSession();
+        return;
+      } catch (error) {
+        if (this.closed || !(error instanceof ExpiredCredential) ||
+            this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) throw error;
+        this.reconnectAttempts++;
+      }
+    }
   }
 
   private async mint(): Promise<MintedSession> {
     // Idempotent; establishes the httpOnly sm_sid session cookie the broker
     // route requires (401 without it).
-    await fetch("/api/session");
+    const timeout = setTimeout(() => this.abort.abort(), 15_000);
+    try {
+    const bootstrap = await fetch("/api/session", { cache: "no-store", signal: this.abort.signal });
+    if (!bootstrap.ok) throw new Error("Voice session setup failed");
+    this.ensureOpen();
     const res = await fetch("/api/realtime/token", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ tournamentId: this.tournamentId }),
+      signal: this.abort.signal,
     });
     if (!res.ok) throw new Error(`token mint failed (${res.status})`);
     const body = (await res.json()) as Partial<MintedSession>;
+    this.ensureOpen();
     if (typeof body.clientSecret !== "string" || body.clientSecret.length === 0) {
       throw new Error("mint response had no clientSecret");
     }
@@ -155,50 +191,62 @@ export class RealtimeVoiceSession {
       wsUrl: body.wsUrl,
       subprotocols: body.subprotocols,
     };
+    } finally { clearTimeout(timeout); }
   }
 
   private openSocket(minted: MintedSession): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(minted.wsUrl, minted.subprotocols);
       this.ws = ws;
-      ws.onopen = () => {
-        // The connect promise is settled now; rebind so later socket errors
-        // reach onError instead of a no-op reject on a settled promise.
-        ws.onerror = () => this.cb.onError?.("realtime socket error");
-        resolve();
+      let settled = false;
+      const timer = setTimeout(() => finish(new Error("Voice connection timed out")), 15_000);
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.cancelOpen = null;
+        if (error) { ws.onclose = null; ws.close(); reject(error); }
+        else resolve();
       };
-      ws.onerror = () => reject(new Error("realtime socket failed to open"));
-      ws.onclose = (evt) => void this.handleSocketClose(evt);
-      ws.onmessage = (msg) => this.handleServerEvent(String(msg.data));
+      this.cancelOpen = () => finish(new Error("Voice session closed"));
+      ws.onopen = () => {
+        if (this.closed) { finish(new Error("Voice session closed")); return; }
+        finish();
+      };
+      ws.onerror = () => {
+        if (this.closed || this.ws !== ws) return;
+        if (!settled) finish(new Error("Voice socket failed to open"));
+        else { this.cb.onError?.("Voice connection interrupted"); this.close(); }
+      };
+      ws.onclose = (event) => {
+        if (this.closed || this.ws !== ws) return;
+        if (!settled) {
+          // The original connect() owns initial recovery; never strand its promise.
+          finish(event.code === 3000 ? new ExpiredCredential() : new Error("Voice socket closed before setup"));
+        } else void this.handleSocketClose(event);
+      };
+      ws.onmessage = message => {
+        if (!this.closed && this.ws === ws) this.handleServerEvent(String(message.data));
+      };
     });
   }
 
-  /**
-   * Close code 3000 is Boson's "invalid or expired ephemeral key". The key's
-   * TTL gates the handshake only, so a 3000 mid-session means we need a
-   * fresh mint and a new socket — the audio pipeline stays up and mic frames
-   * simply resume once the socket reopens.
-   */
-  private async handleSocketClose(evt: CloseEvent): Promise<void> {
+  private async handleSocketClose(event: CloseEvent): Promise<void> {
     if (this.closed) return;
-    if (evt.code === 3000 && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-      this.reconnectAttempts += 1;
+    this.flushPlayback();
+    this.micBuffer = new Float32Array(0);
+    if (event.code === 3000 && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      this.reconnectAttempts++;
       this.cb.onStatus?.("connecting");
       try {
-        const minted = await this.mint();
-        if (this.closed) return;
-        await this.openSocket(minted);
-        this.configureSession();
-        this.cb.onStatus?.("connected");
+        await this.connectSocket();
+        if (!this.closed) this.cb.onStatus?.("connected");
         return;
-      } catch (err) {
-        this.cb.onError?.(
-          err instanceof Error ? err.message : "reconnect failed",
-        );
+      } catch {
+        if (!this.closed) this.cb.onError?.("Voice reconnect failed. Please try again.");
       }
     }
-    this.cb.onStatus?.("closed");
-    this.teardownAudio();
+    this.close();
   }
 
   private configureSession() {
@@ -208,6 +256,7 @@ export class RealtimeVoiceSession {
     this.send({
       type: "session.update",
       session: {
+        ...(this.options.instructions ? { instructions: this.options.instructions } : {}),
         output_modalities: ["audio"],
         audio: {
           input: {
@@ -249,6 +298,7 @@ export class RealtimeVoiceSession {
     } catch {
       return;
     }
+    if (!evt || typeof evt !== "object") return;
     switch (evt.type) {
       case "input_audio_buffer.speech_started":
         // Barge-in: the user started talking; drop queued agent audio.
@@ -330,6 +380,9 @@ export class RealtimeVoiceSession {
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.abort.abort();
+    this.cancelOpen?.();
+    this.micBuffer = new Float32Array(0);
     this.teardownAudio();
     this.ws?.close();
     this.ws = null;
@@ -341,4 +394,8 @@ export class RealtimeVoiceSession {
       this.ws.send(JSON.stringify(event));
     }
   }
+}
+
+class ExpiredCredential extends Error {
+  constructor() { super("Voice credential expired"); }
 }
