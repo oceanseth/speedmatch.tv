@@ -7,9 +7,15 @@ import {
   type OnboardingProfile,
 } from "../../../lib/onboarding";
 import type { Category } from "../../../lib/types";
-import { loadProfile, saveProfile } from "../../../lib/onboardingStore";
 
 export const dynamic = "force-dynamic";
+
+// Dynamic import on purpose: onboardingStore carries the "server-only"
+// poison import (via identity/auth), which Next aliases but the node test
+// runner cannot resolve. Deferring the load keeps this route module
+// importable by the scripted-flow tests; under Next the handlers behave
+// identically.
+const store = () => import("../../../lib/onboardingStore");
 
 /**
  * Returning users skip the interview: the saved profile for the signed-in
@@ -17,6 +23,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: Request) {
   try {
+    const { loadProfile } = await store();
     const profile = await loadProfile(req.headers);
     return NextResponse.json(
       { profile },
@@ -214,12 +221,16 @@ export async function POST(req: Request) {
   if (nextField === null) {
     const profile = answers as OnboardingProfile;
     // Signed-in users keep their answers (Seth's live-test finding: the
-    // interview evaporated). Anonymous completions still work — saved:false
-    // lets the UI say "sign in to keep this".
-    const saved = await saveProfile(req.headers, profile).catch((err) => {
-      console.error("[onboard] profile save failed", err);
-      return false;
-    });
+    // interview evaporated). "anonymous" and "failed" are different truths:
+    // the UI says "sign in to keep this" for one and "we couldn't save
+    // that, try again" for the other — never blames the signed-in user for
+    // a server failure.
+    const saved = await store()
+      .then(({ saveProfile }) => saveProfile(req.headers, profile))
+      .catch((err): "failed" => {
+        console.error("[onboard] profile save failed", err);
+        return "failed";
+      });
     const res: OnboardResponse = {
       reply: `Perfect, ${profile.displayName} — I've got what I need. I'll brief the contestants with a summary (never your exact words). Ready to open the bracket?`,
       nextField: null,

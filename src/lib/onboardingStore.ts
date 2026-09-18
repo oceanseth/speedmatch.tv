@@ -1,6 +1,4 @@
-// Server-only by placement (imported solely from route handlers); the
-// "server-only" poison import is omitted so the node test runner can load
-// the route module (Next aliases that package; plain node cannot).
+import "server-only";
 import {
   parseOnboardingProfile,
   buildPublicSummary,
@@ -11,21 +9,34 @@ import type { OnboardingProfile as AppProfile } from "./onboarding";
 import type { Category } from "./types";
 
 /**
- * Two profile shapes exist by design: the app's conversational shape
- * (displayName/seeking/lookingFor/interests/funFact) and the server
- * package's canonical contract for onboarding_profiles.profile
- * (version/category/goal/interests/preferences/dealbreakers), which is what
- * the orchestrator's pitch context consumes. Mapping: seeking→category,
+ * SOURCE OF TRUTH RULING (from the #23 review): the CANONICAL server-package
+ * shape stored in onboarding_profiles.profile is authoritative
+ * (version/category/goal/interests/preferences/dealbreakers) — the app's
+ * conversational shape (displayName/seeking/lookingFor/interests/funFact)
+ * is a projection for the interview UI. Mapping: seeking→category,
  * lookingFor→goal, funFact→preferences[0]. displayName is NOT stored here —
  * it lives on the account (users.display_name, already sanitized).
+ *
+ * The interview therefore only overwrites the fields it owns: on re-save,
+ * existing dealbreakers and preferences beyond slot 0 (the orchestrator's
+ * future territory) are preserved, not clobbered.
  */
+
+// The canonical contract caps interests/preferences ITEMS at 120 chars while
+// the app caps whole answers at 200 — and its validator throws rather than
+// trims. A signed-in user's perfectly normal 130-char fun fact must save its
+// first 120 chars, not blow up the write (Seth would hit this on his first
+// retest).
+const CANONICAL_ITEM_MAX = 120;
+const clip = (s: string) => s.slice(0, CANONICAL_ITEM_MAX);
+
 export function toCanonicalProfile(p: AppProfile) {
   return parseOnboardingProfile({
     version: 1,
     category: p.seeking,
     goal: p.lookingFor,
-    interests: p.interests,
-    preferences: p.funFact ? [p.funFact] : [],
+    interests: p.interests.map(clip),
+    preferences: p.funFact ? [clip(p.funFact)] : [],
     dealbreakers: [],
   });
 }
@@ -48,9 +59,13 @@ export function toAppProfile(
   }
 }
 
+export type SaveResult = "saved" | "anonymous";
+
 /**
- * Persist a completed profile for the signed-in account. Anonymous sessions
- * return false — nothing to attach to, and the client says so honestly.
+ * Persist a completed interview for the signed-in account; "anonymous" when
+ * there is no session (nothing to attach to). Failures THROW — the caller
+ * distinguishes "failed" from "anonymous" so the UI never tells a signed-in
+ * user to sign in when the write actually blew up.
  * public_summary stays header-only until the user explicitly approves
  * fields (the "ready to open the bracket?" yes belongs to the orchestrator
  * flow) — buildPublicSummary with no approved fields is the safe default.
@@ -58,10 +73,29 @@ export function toAppProfile(
 export async function saveProfile(
   headers: Headers,
   profile: AppProfile,
-): Promise<boolean> {
+): Promise<SaveResult> {
   const user = await getAppUser(headers);
-  if (!user) return false;
-  const canonical = toCanonicalProfile(profile);
+  if (!user) return "anonymous";
+  let canonical = toCanonicalProfile(profile);
+
+  // Preserve orchestrator-owned fields on re-save (see ruling above).
+  const existing = await query<{ profile: unknown }>(
+    `SELECT profile FROM onboarding_profiles WHERE user_id = $1`,
+    [user.id],
+  );
+  if (existing.length > 0) {
+    try {
+      const prev = parseOnboardingProfile(existing[0].profile);
+      canonical = parseOnboardingProfile({
+        ...canonical,
+        preferences: [...canonical.preferences, ...prev.preferences.slice(1)],
+        dealbreakers: prev.dealbreakers,
+      });
+    } catch {
+      // Unreadable stored profile: the fresh interview simply replaces it.
+    }
+  }
+
   const summary = buildPublicSummary(canonical, []);
   await query(
     `INSERT INTO onboarding_profiles (user_id, profile, public_summary, updated_at)
@@ -72,7 +106,7 @@ export async function saveProfile(
            updated_at = now()`,
     [user.id, JSON.stringify(canonical), JSON.stringify(summary)],
   );
-  return true;
+  return "saved";
 }
 
 export async function loadProfile(headers: Headers): Promise<AppProfile | null> {
