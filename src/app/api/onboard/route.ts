@@ -60,7 +60,14 @@ async function readBodyCapped(
     }
     chunks.push(value);
   }
-  return new TextDecoder().decode(Buffer.concat(chunks));
+  // Manual concat keeps this runtime-portable (Buffer would pin us to Node).
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 // The host literally asks "a person, a product, or a place?" — match the
