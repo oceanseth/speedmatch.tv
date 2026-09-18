@@ -34,6 +34,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "bad_category" }, { status: 400 });
   }
 
+  // One live show per account: bounds this unverified-registration write
+  // endpoint, and it is the product rule anyway — you finish (or abandon)
+  // your tournament before starting the next.
+  const live = await query(
+    `SELECT 1 FROM tournaments
+     WHERE user_id = $1 AND phase NOT IN ('FINAL', 'ABANDONED')
+     LIMIT 1`,
+    [user.id],
+  );
+  if (live.length > 0) {
+    return NextResponse.json({ error: "live_tournament_exists" }, { status: 409 });
+  }
+
   const state = createTournament();
   const rows = await query<{ id: string; version: number }>(
     `INSERT INTO tournaments (user_id, category, bracket_size, state, is_public)

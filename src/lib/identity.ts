@@ -20,6 +20,15 @@ export async function getAppUser(headers: Headers): Promise<AppUser | null> {
   const session = await auth.api.getSession({ headers });
   if (!session) return null;
   const { id: authUserId, name } = session.user;
+  // Read-first: this runs on every authorized request (including token
+  // mints), and an unconditional upsert would leave a dead tuple per call.
+  const found = await query<{ id: string; display_name: string }>(
+    `SELECT id, display_name FROM users WHERE auth_user_id = $1`,
+    [authUserId],
+  );
+  if (found.length > 0 && found[0].display_name === name) {
+    return { id: found[0].id, authUserId, displayName: found[0].display_name };
+  }
   const rows = await query<{ id: string; display_name: string }>(
     `INSERT INTO users (display_name, auth_user_id)
      VALUES ($2, $1)
