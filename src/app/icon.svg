@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>SpeedMatch</title>
+  <rect width="64" height="64" rx="16" fill="#0b0616"/>
+  <path d="M10 15c0-3 3-4 5-2l12 16c2 2 2 4 0 6L15 51c-2 2-5 1-5-2Z" fill="#ff5da2"/>
+  <path d="M54 15c0-3-3-4-5-2L37 29c-2 2-2 4 0 6l12 16c2 2 5 1 5-2Z" fill="#b08aff"/>
+</svg>

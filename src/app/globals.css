@@ -36,6 +36,53 @@ body {
   color: transparent;
 }
 
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-shrink: 0;
+}
+
+.brand-symbol {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+.brand-wordmark {
+  color: var(--foreground);
+  font-size: 1.45rem;
+  font-weight: 850;
+  font-style: italic;
+  letter-spacing: -0.065em;
+  line-height: 1;
+}
+
+.brand-wordmark > span {
+  color: var(--brand-pink);
+}
+
+.brand-tv {
+  border: 1px solid #5b3a7e;
+  border-radius: 0.3rem;
+  padding: 0.22rem 0.3rem;
+  color: #d9c7ff;
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+@media (min-width: 640px) {
+  .brand-symbol { width: 2.5rem; height: 2.5rem; }
+  .brand-wordmark { font-size: 1.65rem; }
+}
+
+@media (max-width: 359px) {
+  .brand-lockup { gap: 0.45rem; }
+  .brand-symbol { width: 2rem; height: 2rem; }
+  .brand-wordmark { font-size: 1.25rem; }
+}
+
 @keyframes pulse-live {
   0%,
   100% {
