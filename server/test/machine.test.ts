@@ -109,6 +109,20 @@ test('ONBOARD carries a deadline and lapses to ABANDONED', () => {
   assert.equal(s.phase, 'ABANDONED');
 });
 
+test('ONBOARD_ACTIVITY re-arms the deadline — chatty users are not dropped', () => {
+  let s = createTournament({ bracketSize: 4 });
+  s = advance(s, { type: 'START_ONBOARD' }, T0);
+  const later = T0 + 200_000;
+  s = advance(s, { type: 'ONBOARD_ACTIVITY' }, later);
+  assert.equal(s.phase, 'ONBOARD');
+  assert.equal(s.deadlineAt, later + config.onboardSeconds * 1000);
+  // Old deadline passing is no longer an expiry.
+  assert.throws(
+    () => advance(s, { type: 'TIMER_EXPIRED' }, T0 + config.onboardSeconds * 1000),
+    (e: unknown) => e instanceof TransitionError && e.code === 'TIMER_NOT_EXPIRED',
+  );
+});
+
 test('8-bracket produces 3 rounds and 7 matches', () => {
   const s = seeded(8);
   assert.equal(s.rounds.length, 3);

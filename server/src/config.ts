@@ -19,7 +19,14 @@ export const config = {
   /** Token-broker rate limits: per user, per client IP, and process-wide. */
   tokenMintsPerMinute: 10,
   tokenMintsPerMinutePerIp: 20,
+  /**
+   * Mint budget: guards the prepaid Boson balance, so it runs AFTER auth —
+   * unauthenticated junk must not be able to exhaust it (that would turn a
+   * spend attack into an availability attack on real users).
+   */
   tokenMintsPerMinuteGlobal: 120,
+  /** Cheap pre-auth cap on raw request volume, well above legit traffic. */
+  tokenRequestsPerMinutePreAuth: 600,
 } as const;
 
 export type Category = 'people' | 'products' | 'places';

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createTokenBrokerHandler,
+  defaultClientKey,
   mintClientSecret,
   RateLimiter,
   REALTIME_WS_URL,
@@ -87,24 +88,81 @@ test('handler: rotating user ids cannot dodge the IP limit', async () => {
   const req = () =>
     new Request('http://x/api/realtime/token', {
       method: 'POST',
-      headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' },
+      headers: { 'cf-connecting-ip': '203.0.113.7' },
     });
   assert.equal((await handler(req())).status, 200);
   assert.equal((await handler(req())).status, 200);
   assert.equal((await handler(req())).status, 429); // 3rd mint, 3rd distinct user
 });
 
-test('handler: process-wide ceiling applies before auth', async () => {
+test('handler: spoofed leftmost XFF cannot rotate the IP key', async () => {
+  let n = 0;
+  const handler = createTokenBrokerHandler({
+    authorize: async () => ({ userId: 'u1', tournamentId: 't1' }),
+    ipLimiter: new RateLimiter(2),
+    userLimiter: new RateLimiter(100),
+    mint: async () => ({ value: 'bai-eph-xyz', expiresAt: 999, sessionId: null }),
+  });
+  // Attacker types a fresh leftmost hop each request; the trusted proxy
+  // appends the real IP last — the key must come from the rightmost hop.
+  const req = () =>
+    new Request('http://x/api/realtime/token', {
+      method: 'POST',
+      headers: { 'x-forwarded-for': `10.0.0.${n++}, 198.51.100.9` },
+    });
+  assert.equal((await handler(req())).status, 200);
+  assert.equal((await handler(req())).status, 200);
+  assert.equal((await handler(req())).status, 429);
+});
+
+test('defaultClientKey prefers CF-Connecting-IP over XFF', () => {
+  const req = new Request('http://x/', {
+    headers: {
+      'cf-connecting-ip': '198.51.100.9',
+      'x-forwarded-for': 'spoofed, 203.0.113.7',
+    },
+  });
+  assert.equal(defaultClientKey(req), '198.51.100.9');
+  assert.equal(
+    defaultClientKey(new Request('http://x/', { headers: { 'x-forwarded-for': 'spoofed, 203.0.113.7' } })),
+    '203.0.113.7',
+  );
+  assert.equal(defaultClientKey(new Request('http://x/')), 'unknown');
+});
+
+test('handler: unauthenticated junk cannot exhaust the mint budget', async () => {
+  const handler = createTokenBrokerHandler({
+    authorize: async (req) =>
+      req.headers.get('x-user') ? { userId: 'u1', tournamentId: 't1' } : null,
+    globalLimiter: new RateLimiter(1), // mint budget of exactly 1
+    mint: async () => ({ value: 'bai-eph-xyz', expiresAt: 999, sessionId: null }),
+  });
+  // 20 junk requests answer 401 without touching the mint budget…
+  for (let i = 0; i < 20; i++) {
+    assert.equal(
+      (await handler(new Request('http://x/t', { method: 'POST' }))).status,
+      401,
+    );
+  }
+  // …so the real user still mints.
+  const real = await handler(
+    new Request('http://x/t', { method: 'POST', headers: { 'x-user': 'u1' } }),
+  );
+  assert.equal(real.status, 200);
+});
+
+test('handler: pre-auth volume cap rejects raw floods before authorize', async () => {
   let authCalls = 0;
   const handler = createTokenBrokerHandler({
     authorize: async () => {
       authCalls++;
       return { userId: 'u1', tournamentId: 't1' };
     },
-    globalLimiter: new RateLimiter(1),
+    preAuthLimiter: new RateLimiter(1),
+    userLimiter: new RateLimiter(100),
     mint: async () => ({ value: 'bai-eph-xyz', expiresAt: 999, sessionId: null }),
   });
-  const req = () => new Request('http://x/api/realtime/token', { method: 'POST' });
+  const req = () => new Request('http://x/t', { method: 'POST' });
   assert.equal((await handler(req())).status, 200);
   assert.equal((await handler(req())).status, 429);
   assert.equal(authCalls, 1);

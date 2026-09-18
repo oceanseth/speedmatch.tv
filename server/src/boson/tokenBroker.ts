@@ -128,12 +128,25 @@ export interface TokenBrokerDeps {
   onMint?: (grant: MintGrant, secret: ClientSecret) => Promise<void>;
   userLimiter?: RateLimiter;
   ipLimiter?: RateLimiter;
+  /** Post-auth process-wide mint budget (guards prepaid Boson spend). */
   globalLimiter?: RateLimiter;
+  /** Pre-auth process-wide cap on raw request volume. */
+  preAuthLimiter?: RateLimiter;
   mint?: (opts?: MintOptions) => Promise<ClientSecret>;
 }
 
-function defaultClientKey(req: Request): string {
-  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+/**
+ * Rate-limit key that the client cannot choose. We sit behind Cloudflare
+ * (which APPENDS the true client IP to x-forwarded-for), so the leftmost
+ * hop is attacker-typed — one spoofed header per request would rotate the
+ * key. Prefer CF-Connecting-IP; fall back to the RIGHTMOST XFF hop (the one
+ * added by the nearest trusted proxy).
+ */
+export function defaultClientKey(req: Request): string {
+  const cf = req.headers.get('cf-connecting-ip');
+  if (cf) return cf.trim();
+  const hops = req.headers.get('x-forwarded-for')?.split(',') ?? [];
+  return hops.at(-1)?.trim() || 'unknown';
 }
 
 export function createTokenBrokerHandler(deps: TokenBrokerDeps) {
@@ -141,18 +154,21 @@ export function createTokenBrokerHandler(deps: TokenBrokerDeps) {
   const ipLimiter = deps.ipLimiter ?? new RateLimiter(config.tokenMintsPerMinutePerIp);
   const globalLimiter =
     deps.globalLimiter ?? new RateLimiter(config.tokenMintsPerMinuteGlobal);
+  const preAuthLimiter =
+    deps.preAuthLimiter ?? new RateLimiter(config.tokenRequestsPerMinutePreAuth);
   const clientKey = deps.clientKey ?? defaultClientKey;
   const mint = deps.mint ?? mintClientSecret;
 
   return async function handler(req: Request): Promise<Response> {
-    // IP + global limits run before auth so identity rotation can't dodge
-    // them; the per-user limit runs after.
-    if (!globalLimiter.allow('*') || !ipLimiter.allow(clientKey(req))) {
+    // Pre-auth: cheap volume cap + per-IP limit — identity rotation can't
+    // dodge these. The MINT budget deliberately runs after auth so that
+    // unauthenticated junk can't exhaust it and lock real users out.
+    if (!preAuthLimiter.allow('*') || !ipLimiter.allow(clientKey(req))) {
       return Response.json({ error: 'rate_limited' }, { status: 429 });
     }
     const grant = await deps.authorize(req);
     if (!grant) return Response.json({ error: 'unauthorized' }, { status: 401 });
-    if (!userLimiter.allow(grant.userId)) {
+    if (!userLimiter.allow(grant.userId) || !globalLimiter.allow('*')) {
       return Response.json({ error: 'rate_limited' }, { status: 429 });
     }
     try {

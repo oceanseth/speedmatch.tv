@@ -56,6 +56,9 @@ export interface TournamentState {
 
 export type TournamentEvent =
   | { type: 'START_ONBOARD' }
+  /** User spoke/typed during onboarding: re-arms the ONBOARD deadline so a
+   * chatty user isn't dropped mid-sentence by a hard wall. */
+  | { type: 'ONBOARD_ACTIVITY' }
   | { type: 'ONBOARD_COMPLETE' }
   | { type: 'SEEDED'; entrants: string[] }
   | { type: 'TIMER_EXPIRED' }
@@ -177,6 +180,10 @@ export function advance(
   switch (event.type) {
     case 'START_ONBOARD': {
       expectPhase(state, 'LOBBY');
+      return enterPhase(state, 'ONBOARD', now);
+    }
+    case 'ONBOARD_ACTIVITY': {
+      expectPhase(state, 'ONBOARD');
       return enterPhase(state, 'ONBOARD', now);
     }
     case 'ONBOARD_COMPLETE': {
