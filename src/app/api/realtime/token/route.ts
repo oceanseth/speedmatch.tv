@@ -1,7 +1,7 @@
 import {
   createTokenBrokerHandler,
   type MintGrant,
-} from "../../../../../server/src/boson/tokenBroker";
+} from "@speedmatch/server/boson";
 
 export const dynamic = "force-dynamic";
 
