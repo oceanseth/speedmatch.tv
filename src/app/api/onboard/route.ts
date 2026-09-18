@@ -141,11 +141,128 @@ function questionFor(
   }
 }
 
+// Conversation-control utterances are feedback to the host, never answers
+// (David's regression profile: "Let me speak. You should wait until I
+// answer" was stored as his fun fact).
+const CONTROL_RE =
+  /\b(let me (speak|talk|finish|answer)|wait until i answer|you should wait|hold on|hang on|one (sec|second|moment)|stop( talking| it)?|can you hear me|shut up|be quiet|slow down|start over)\b/i;
+
+/**
+ * A control phrase is an UTTERANCE, not a substring: "somewhere I can stop
+ * and think" is a real answer, not a request to stop (Opus #26 finding 3).
+ * Strategy: strip every control-phrase match and conversational filler; if
+ * almost nothing remains, the message was control through and through —
+ * which also catches David's stuttered "Let me speak. You, you, you
+ * should, you should wait until I answer."
+ */
+function isControlUtterance(msg: string): boolean {
+  // Structural discriminator (Opus): a control phrase is the whole
+  // utterance; an answer opens with a declarative frame. "I want to slow
+  // down" is a goal, not a command — never classify framed speech as
+  // control regardless of what follows.
+  if (/^\s*(i\s+want|i\s+need|i'?m\s+looking\s+for|somewhere|a\s+|an\s+|the\s+)/i.test(msg)) {
+    return false;
+  }
+  if (!CONTROL_RE.test(msg)) return false;
+  const residue = msg
+    .replace(new RegExp(CONTROL_RE.source, "gi"), " ")
+    .replace(/\b(you|i|me|we|it|should|would|please|now|then|just|really|can|could|will|wait|until|answer|ok|okay|so|and|uh|um)\b/gi, " ")
+    .replace(/[^A-Za-z]/g, "");
+  return residue.length <= 6;
+}
+
+// Contentless answers that identify nothing to pitch against ("The best.").
+const VAGUE_RE =
+  /^(the\s+|a\s+|an\s+)?(best|good|great|nice|cool|fine|anything|whatever|something|idk|i don'?t know)(\s+one)?[.!\s]*$/i;
+
+// A voice fragment applied twice must not fill two different fields.
+function isDuplicateAnswer(
+  msg: string,
+  answers: Partial<OnboardingProfile>,
+): boolean {
+  const norm = (v: string) => v.toLowerCase().replace(/[.!?\s]+$/g, "").trim();
+  const values = [
+    answers.displayName,
+    answers.lookingFor,
+    answers.funFact,
+    ...(answers.interests ?? []),
+  ].filter((v): v is string => Boolean(v));
+  return values.some((v) => norm(v) === norm(msg));
+}
+
 function nextMissing(answers: Partial<OnboardingProfile>): OnboardField | null {
   for (const f of ORDER) {
     if (answers[f] === undefined) return f;
   }
   return null;
+}
+
+// "I'm looking for..." must not become a display name.
+const NAME_STOPWORDS = new Set([
+  "looking", "searching", "trying", "hoping", "wanting", "going", "gonna",
+  "here", "just", "not", "really", "interested", "sorry", "good", "fine",
+  // Articles/prepositions: "I'm a designer", "I'm from Seattle" are
+  // self-descriptions, not names (Opus #26 finding 2).
+  "a", "an", "the", "from", "with", "in", "at", "on",
+]);
+
+const NAME_RE =
+  /(?:i'?m|i am|my name is|call me|this is)\s+([A-Za-z][\w'-]*(?:\s+[A-Za-z][\w'-]*)?)/i;
+
+/** "I'm David and I want…" → "David"; undefined when no safe capture. */
+function extractName(msg: string): string | undefined {
+  const raw = msg.match(NAME_RE)?.[1]?.trim();
+  if (!raw) return undefined;
+  // The optional second word is for "Maya Chen", not "David and…".
+  const candidate = raw.replace(/\s+(and|but|so|here|from|by)$/i, "");
+  if (NAME_STOPWORDS.has(candidate.split(/\s+/)[0].toLowerCase())) return undefined;
+  return candidate;
+}
+
+/**
+ * Fill OTHER missing fields from the same utterance (David's pacing report:
+ * one field per answer makes "I'm David, I want a hiking buddy" take five
+ * questions). Conservative by design: only fills blanks, never overwrites,
+ * skips the field the message was aimed at, and interests/funFact stay
+ * directed-only (list-shape guessing produces garbage). Returns the fields
+ * it captured so the host can acknowledge them.
+ */
+function extractExtras(
+  msg: string,
+  answers: Partial<OnboardingProfile>,
+  directedField: OnboardField | null,
+): OnboardField[] {
+  const captured: OnboardField[] = [];
+  if (answers.displayName === undefined && directedField !== "displayName") {
+    const candidate = extractName(msg);
+    if (candidate) {
+      answers.displayName = candidate.slice(0, 40);
+      captured.push("displayName");
+    }
+  }
+  if (answers.seeking === undefined && directedField !== "seeking") {
+    const cat = parseCategory(msg);
+    if (cat) {
+      answers.seeking = cat;
+      captured.push("seeking");
+    }
+  }
+  if (answers.lookingFor === undefined && directedField !== "lookingFor") {
+    const m = msg.match(
+      /(?:looking for|want to find|searching for|hoping to find|i want|i need)\s+(.{8,})/i,
+    );
+    const goal = m?.[1]?.trim();
+    // "I want a person" answering the CATEGORY question is a category, not
+    // a goal — a bare category term must not poison lookingFor (Opus #26
+    // finding 1: fired for "a person"/"a product" but not "a place").
+    const bareCategory =
+      /^(a\s+|an\s+|the\s+)?(person|people|product|products|place|places|someone|somebody|something)[.!\s]*$/i;
+    if (goal && !bareCategory.test(goal)) {
+      answers.lookingFor = goal;
+      captured.push("lookingFor");
+    }
+  }
+  return captured;
 }
 
 export async function POST(req: Request) {
@@ -183,13 +300,37 @@ export async function POST(req: Request) {
   if (typeof a.funFact === "string")
     answers.funFact = sanitizeAnswer(a.funFact) || undefined;
 
-  // Apply the new message to the field it answers.
+  // Deflections: control phrases, duplicates, and contentless answers get a
+  // re-ask instead of polluting the profile.
+  let deflect: string | null = null;
   if (body.field && typeof body.message === "string") {
+    const msg = sanitizeAnswer(body.message);
+    if (msg) {
+      if (isControlUtterance(msg)) {
+        deflect = "Sorry — go ahead, I'm listening. ";
+      } else if (isDuplicateAnswer(msg, answers)) {
+        deflect = "I've already got that one down. ";
+      } else if (
+        (body.field === "lookingFor" || body.field === "funFact") &&
+        VAGUE_RE.test(msg)
+      ) {
+        deflect =
+          body.field === "lookingFor"
+            ? '"The best" gives the contestants nothing to pitch against — best HOW? One concrete thing it should do for you: '
+            : "Give me something real — one specific thing about you: ";
+      }
+    }
+  }
+
+  // Apply the new message to the field it answers.
+  if (!deflect && body.field && typeof body.message === "string") {
     const msg = sanitizeAnswer(body.message);
     if (msg) {
       switch (body.field) {
         case "displayName":
-          answers.displayName = msg.slice(0, 40);
+          // "I'm David and I want a hiking buddy" must yield "David", not
+          // the whole sentence; a plain "David" answer passes through.
+          answers.displayName = (extractName(msg) ?? msg).slice(0, 40);
           break;
         case "seeking": {
           const cat = parseCategory(msg);
@@ -214,6 +355,25 @@ export async function POST(req: Request) {
           answers.funFact = msg;
           break;
       }
+    }
+  }
+
+  // Opportunistic multi-field capture from the same utterance.
+  let extras: OnboardField[] = [];
+  if (!deflect && typeof body.message === "string") {
+    const msg = sanitizeAnswer(body.message);
+    if (msg) extras = extractExtras(msg, answers, body.field ?? null);
+  }
+
+  // A signed-in account already told us its name — never ask for it again.
+  if (answers.displayName === undefined) {
+    try {
+      const { getAppUser } = await import("../../../lib/identity");
+      const user = await getAppUser(req.headers);
+      if (user?.displayName) answers.displayName = user.displayName.slice(0, 40);
+    } catch {
+      // Anonymous, or auth unavailable (e.g. under the node test runner):
+      // the interview simply asks.
     }
   }
 
@@ -255,8 +415,30 @@ export async function POST(req: Request) {
         : q
       : q;
 
+  if (deflect && nextField !== null) {
+    const q = questionFor(nextField, answers);
+    const res: OnboardResponse = {
+      // Vague-answer deflects end ": " and ARE the focused re-ask; control
+      // and duplicate deflects need the actual question appended.
+      reply: deflect + (deflect.endsWith(": ") ? "" : q.reply),
+      suggestions: q.suggestions,
+      nextField,
+      done: false,
+      answers,
+    };
+    return NextResponse.json(res, { headers: { "Cache-Control": "no-store" } });
+  }
+
+  // Let the user HEAR that one utterance landed several answers.
+  const ack =
+    extras.length >= 2
+      ? "Got several answers out of that at once — efficient. "
+      : extras.length === 1
+        ? "I caught an extra answer in there too. "
+        : "";
   const res: OnboardResponse = {
     ...retry,
+    reply: ack + retry.reply,
     nextField,
     done: false,
     answers,
