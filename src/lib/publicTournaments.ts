@@ -22,7 +22,7 @@ const CATEGORY_EMOJI: Record<Category, string> = {
   places: "📍",
 };
 
-function personaLite(
+export function personaLite(
   id: string,
   name: string,
   imageUrl: string | null,

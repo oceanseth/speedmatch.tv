@@ -145,7 +145,7 @@ function questionFor(
 // (David's regression profile: "Let me speak. You should wait until I
 // answer" was stored as his fun fact).
 const CONTROL_RE =
-  /\b(let me (speak|talk|finish|answer)|wait until i answer|you should wait|hold on|hang on|one (sec|second|moment)|stop( talking| it)?|can you hear me|shut up|be quiet|slow down|start over)\b/i;
+  /\b(let me (speak|talk|finish|answer)|wait until i answer|you should wait|hold on|hang on|(one|a) (sec|second|moment)|stop( talking| it)?|can you hear me|shut up|be quiet|slow down|start over)\b/i;
 
 /**
  * A control phrase is an UTTERANCE, not a substring: "somewhere I can stop
@@ -160,7 +160,7 @@ function isControlUtterance(msg: string): boolean {
   // utterance; an answer opens with a declarative frame. "I want to slow
   // down" is a goal, not a command — never classify framed speech as
   // control regardless of what follows.
-  if (/^\s*(i\s+want|i\s+need|i'?m\s+looking\s+for|somewhere|a\s+|an\s+|the\s+)/i.test(msg)) {
+  if (/^\s*(i\s+want|i\s+need|i'?m\s+looking\s+for|somewhere)/i.test(msg)) {
     return false;
   }
   if (!CONTROL_RE.test(msg)) return false;
