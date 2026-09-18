@@ -32,6 +32,37 @@ const CATEGORIES: Category[] = ["people", "products", "places"];
 const MAX_BODY_BYTES = 8_192;
 const MAX_INTERESTS = 3;
 
+/**
+ * Read the body without ever buffering more than maxBytes: reject on the
+ * Content-Length header when present, and count decoded bytes (not UTF-16
+ * code units) as chunks arrive, cancelling the stream the moment the cap
+ * is crossed — a chunked body with an absent or lying header still can't
+ * make us hold more than one chunk past the limit. Returns null when the
+ * cap is exceeded.
+ */
+async function readBodyCapped(
+  req: Request,
+  maxBytes: number,
+): Promise<string | null> {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+  const reader = req.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
 // The host literally asks "a person, a product, or a place?" — match the
 // natural answers, not just the plural table names.
 const CATEGORY_SYNONYMS: Record<Category, string[]> = {
@@ -89,8 +120,8 @@ function nextMissing(answers: Partial<OnboardingProfile>): OnboardField | null {
 export async function POST(req: Request) {
   let body: OnboardRequest;
   try {
-    const raw = await req.text();
-    if (raw.length > MAX_BODY_BYTES)
+    const raw = await readBodyCapped(req, MAX_BODY_BYTES);
+    if (raw === null)
       return NextResponse.json({ error: "payload too large" }, { status: 413 });
     body = JSON.parse(raw) as OnboardRequest;
   } catch {

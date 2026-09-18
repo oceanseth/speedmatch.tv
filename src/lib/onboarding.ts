@@ -48,7 +48,9 @@ export const MAX_ANSWER_CHARS = 200;
  * Must stay semantically identical to the backend's
  * stripSpeechControlTokens (server/src/onboarding/profile.ts on
  * backend-skeleton). Once that package merges, import it here and delete
- * this copy — one invariant, one implementation.
+ * this copy — one invariant, one implementation. Take the backend's
+ * ordering then (Tags block stripped BEFORE the <|…|> match, so a
+ * tag-encoded payload is deleted whole rather than leaving inner text).
  */
 export function sanitizeAnswer(raw: string): string {
   return raw
