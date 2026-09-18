@@ -176,7 +176,7 @@ export default function StageClient({ category }: { category: Category }) {
     focus === "main" &&
     snapshot?.main != null &&
     myName.trim() !== "" &&
-    snapshot.main.seeker === sanitizeAnswer(myName, 60);
+    snapshot.main.seeker === sanitizeAnswer(myName, { maxChars: 60 });
 
   const stopMedia = useCallback(() => {
     rtSessionRef.current?.close();
@@ -234,7 +234,7 @@ export default function StageClient({ category }: { category: Category }) {
   };
 
   const apply = async () => {
-    const name = sanitizeAnswer(myName, 60);
+    const name = sanitizeAnswer(myName, { maxChars: 60 });
     if (!name) return false;
     localStorage.setItem(NAME_STORAGE_KEY, name);
     setMyName(name);

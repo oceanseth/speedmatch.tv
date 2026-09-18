@@ -20,9 +20,11 @@ export async function GET(
   try {
     const tournament = await getPublicTournament(id);
     if (!tournament) return notFound();
+    // Bounded, not immutable: visibility withdrawal must propagate (see the
+    // list route). 404s stay uncached so a just-published show appears fast.
     return NextResponse.json(
       { tournament },
-      { headers: { "cache-control": "no-store" } },
+      { headers: { "cache-control": "public, s-maxage=60, stale-while-revalidate=300" } },
     );
   } catch {
     return NextResponse.json({ error: "unavailable" }, { status: 503 });

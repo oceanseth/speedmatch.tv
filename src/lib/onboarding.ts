@@ -40,9 +40,12 @@ export const MAX_ANSWER_CHARS = 200;
 /** Apply the shared server sanitizer before the UI's answer-length cap.
  * The API re-runs this for every incoming value; client sanitization is UX only.
  */
+// Options object on purpose: an optional positional number is exactly the
+// signature that breaks under `.map(sanitizeAnswer)` (the index becomes the
+// cap — shipped bug). With an object, point-free use is a compile error.
 export function sanitizeAnswer(
   raw: string,
-  maxChars: number = MAX_ANSWER_CHARS,
+  opts?: { maxChars?: number },
 ): string {
-  return stripSpeechControlTokens(raw).slice(0, maxChars);
+  return stripSpeechControlTokens(raw).slice(0, opts?.maxChars ?? MAX_ANSWER_CHARS);
 }

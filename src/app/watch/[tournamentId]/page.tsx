@@ -9,7 +9,11 @@ import { publicText, showDate } from "../../../lib/public-replays";
 import { roundLabel } from "../../../lib/types";
 import type { MatchRecord } from "../../../lib/matches";
 
-export const dynamic = "force-dynamic";
+// ISR, not force-dynamic: this is the highest-volume public path and the
+// content is a finished tournament. Bounded 30s so visibility withdrawal
+// still propagates (see the API routes); the internal fetch revalidates on
+// the same clock.
+export const revalidate = 30;
 type Props = { params: Promise<{ tournamentId: string }> };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
