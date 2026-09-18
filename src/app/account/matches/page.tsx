@@ -6,8 +6,8 @@ import {
   type PersonaLite,
   type TournamentSummary,
 } from "../../../lib/matches";
-import { roundLabel } from "../../../lib/types";
 import AvatarGlyph from "../../../components/AvatarGlyph";
+import { roundLabel } from "../../../lib/types";
 
 export const metadata: Metadata = {
   title: "My Matches — SpeedMatch.tv",

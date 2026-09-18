@@ -1,15 +1,8 @@
 import type { Avatar } from "../lib/types";
 
 // Same three-kind rendering as LiveShowcase so image/stream personas
-// never fall through to a blank space. Shared by My Matches, the stage
-// surface, and the public watch pages.
-export default function AvatarGlyph({
-  avatar,
-  size,
-}: {
-  avatar: Avatar;
-  size: number;
-}) {
+// never fall through to a blank space.
+export default function AvatarGlyph({ avatar, size }: { avatar: Avatar; size: number }) {
   return (
     <>
       {avatar.kind === "emoji" && avatar.value}
