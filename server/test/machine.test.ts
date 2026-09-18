@@ -84,7 +84,7 @@ test('bracketSize must be a power of two', () => {
   assert.throws(() => createTournament({ bracketSize: 1 }), TransitionError);
 });
 
-test('DECIDE timeout defaults deterministically and advances', () => {
+test('DECIDE timeout abandons the tournament — never fabricates a winner', () => {
   let s = seeded(4);
   let now = s.deadlineAt!;
   s = advance(s, { type: 'TIMER_EXPIRED' }, now); // -> PITCH_B
@@ -94,10 +94,19 @@ test('DECIDE timeout defaults deterministically and advances', () => {
   s = advance(s, { type: 'TIMER_EXPIRED' }, now); // -> DECIDE
   assert.equal(s.phase, 'DECIDE');
   now = s.deadlineAt!;
-  s = advance(s, { type: 'TIMER_EXPIRED' }, now); // no pick -> defaults to A
-  assert.equal(s.rounds[0][0].winner, 'p1');
-  assert.equal(s.phase, 'PITCH_A');
-  assert.deepEqual(s.current, { round: 0, index: 1 });
+  s = advance(s, { type: 'TIMER_EXPIRED' }, now); // no pick -> ABANDONED
+  assert.equal(s.phase, 'ABANDONED');
+  assert.equal(s.rounds[0][0].winner, null);
+  assert.equal(s.winner, null);
+  assert.equal(s.deadlineAt, null);
+});
+
+test('ONBOARD carries a deadline and lapses to ABANDONED', () => {
+  let s = createTournament({ bracketSize: 4 });
+  s = advance(s, { type: 'START_ONBOARD' }, T0);
+  assert.equal(s.deadlineAt, T0 + config.onboardSeconds * 1000);
+  s = advance(s, { type: 'TIMER_EXPIRED' }, s.deadlineAt!);
+  assert.equal(s.phase, 'ABANDONED');
 });
 
 test('8-bracket produces 3 rounds and 7 matches', () => {

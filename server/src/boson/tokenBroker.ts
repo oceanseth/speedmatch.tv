@@ -64,15 +64,23 @@ export async function mintClientSecret(opts: MintOptions = {}): Promise<ClientSe
   };
 }
 
-/** Sliding-window in-memory rate limiter. Per-process; fine for one compute. */
+/**
+ * Sliding-window in-memory rate limiter. Per-process; fine for one compute.
+ * Stale keys are evicted on a periodic sweep so unbounded distinct keys
+ * (e.g. attacker-rotated user ids) cannot grow the map forever.
+ */
 export class RateLimiter {
   private hits = new Map<string, number[]>();
+  private allowCalls = 0;
+
   constructor(
     private readonly max: number,
     private readonly windowMs = 60_000,
+    private readonly sweepEvery = 1000,
   ) {}
 
   allow(key: string, now = Date.now()): boolean {
+    if (++this.allowCalls % this.sweepEvery === 0) this.sweep(now);
     const cutoff = now - this.windowMs;
     const recent = (this.hits.get(key) ?? []).filter((t) => t > cutoff);
     if (recent.length >= this.max) {
@@ -83,31 +91,73 @@ export class RateLimiter {
     this.hits.set(key, recent);
     return true;
   }
+
+  sweep(now = Date.now()): void {
+    const cutoff = now - this.windowMs;
+    for (const [key, times] of this.hits) {
+      if (!times.some((t) => t > cutoff)) this.hits.delete(key);
+    }
+  }
+
+  get trackedKeys(): number {
+    return this.hits.size;
+  }
+}
+
+export interface MintGrant {
+  userId: string;
+  /** The tournament the caller claims to be running — authorize() must
+   * verify ownership: only the session owner mints, spectators never do. */
+  tournamentId: string;
 }
 
 export interface TokenBrokerDeps {
   /**
-   * Resolve the authenticated user for this request, or null to reject.
-   * The transport layer also decides ownership: only the user running the
-   * session gets a speaking credential — never spectators.
+   * Resolve the authenticated caller AND verify they own the tournament
+   * they're minting for; return null to reject. A userId alone is not
+   * enough — under light auth it is user-chosen, and a spectator with a
+   * valid login must still be refused.
    */
-  authorize: (req: Request) => Promise<{ userId: string } | null>;
-  rateLimiter?: RateLimiter;
+  authorize: (req: Request) => Promise<MintGrant | null>;
+  /**
+   * Non-user-chosen rate-limit dimension for this request (client IP or
+   * connection id). Default reads the first hop of x-forwarded-for.
+   */
+  clientKey?: (req: Request) => string;
+  /** Audit hook: append a TOKEN_MINTED row to session_events. */
+  onMint?: (grant: MintGrant, secret: ClientSecret) => Promise<void>;
+  userLimiter?: RateLimiter;
+  ipLimiter?: RateLimiter;
+  globalLimiter?: RateLimiter;
   mint?: (opts?: MintOptions) => Promise<ClientSecret>;
 }
 
+function defaultClientKey(req: Request): string {
+  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+}
+
 export function createTokenBrokerHandler(deps: TokenBrokerDeps) {
-  const limiter = deps.rateLimiter ?? new RateLimiter(config.tokenMintsPerMinute);
+  const userLimiter = deps.userLimiter ?? new RateLimiter(config.tokenMintsPerMinute);
+  const ipLimiter = deps.ipLimiter ?? new RateLimiter(config.tokenMintsPerMinutePerIp);
+  const globalLimiter =
+    deps.globalLimiter ?? new RateLimiter(config.tokenMintsPerMinuteGlobal);
+  const clientKey = deps.clientKey ?? defaultClientKey;
   const mint = deps.mint ?? mintClientSecret;
 
   return async function handler(req: Request): Promise<Response> {
-    const user = await deps.authorize(req);
-    if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });
-    if (!limiter.allow(user.userId)) {
+    // IP + global limits run before auth so identity rotation can't dodge
+    // them; the per-user limit runs after.
+    if (!globalLimiter.allow('*') || !ipLimiter.allow(clientKey(req))) {
+      return Response.json({ error: 'rate_limited' }, { status: 429 });
+    }
+    const grant = await deps.authorize(req);
+    if (!grant) return Response.json({ error: 'unauthorized' }, { status: 401 });
+    if (!userLimiter.allow(grant.userId)) {
       return Response.json({ error: 'rate_limited' }, { status: 429 });
     }
     try {
       const secret = await mint();
+      await deps.onMint?.(grant, secret);
       return Response.json({
         clientSecret: secret.value,
         expiresAt: secret.expiresAt,

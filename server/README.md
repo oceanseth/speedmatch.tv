@@ -35,12 +35,23 @@ there are zero runtime dependencies).
 
 The WS/route layer that mounts this must enforce:
 1. Ownership: only the tournament's owner may send `USER_DECISION` or mint a
-   speaking token. Spectators are read-only.
-2. Drive `TIMER_EXPIRED` from a server timer using `msRemaining()`.
-3. Append every transition to `session_events`.
-4. Onboarding transcript → `onboarding_profiles.profile` goes through typed
+   speaking token. Spectators are read-only. The broker's `authorize` now
+   returns `{ userId, tournamentId }` — verifying that pair against the
+   `tournaments` row is the mount point's job; a valid login alone is not
+   enough.
+2. Optimistic concurrency on every event application:
+   `UPDATE tournaments SET state = $new, version = version + 1 WHERE id = $id
+   AND version = $expected` — reject on zero rows. Double-clicks and
+   reconnect replays otherwise race `advance()` and skip matches. Use the new
+   version as `session_events.seq` so the events PK also serializes appends.
+3. Drive `TIMER_EXPIRED` from a server timer using `msRemaining()`.
+4. Append every transition to `session_events`, including `TOKEN_MINTED` via
+   the broker's `onMint` hook.
+5. Onboarding transcript → `onboarding_profiles.profile` goes through typed
    schema extraction; strip `<|...|>` control tags from anything user-supplied
    before it reaches TTS.
+6. The public live feed queries `WHERE is_public` only (default false), and
+   shows a consented display pseudonym — never the account name.
 
 ## Run migrations (InstaCloud branch DB)
 

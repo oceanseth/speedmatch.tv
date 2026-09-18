@@ -23,7 +23,14 @@ export type Phase =
   | 'PITCH_B'
   | 'USER_RESPONSE'
   | 'DECIDE'
-  | 'FINAL';
+  | 'FINAL'
+  /**
+   * Terminal state for a session the user walked away from (ONBOARD or
+   * DECIDE deadline lapsed with no input). An unfinished tournament is
+   * honest; fabricating a winner the user never picked is not — so no
+   * default-to-A, and My Matches can render it as abandoned.
+   */
+  | 'ABANDONED';
 
 export interface Match {
   round: number;
@@ -69,6 +76,7 @@ export class TransitionError extends Error {
 }
 
 const TIMED_PHASE_SECONDS: Partial<Record<Phase, number>> = {
+  ONBOARD: config.onboardSeconds,
   PITCH_A: config.pitchSeconds,
   PITCH_B: config.pitchSeconds,
   USER_RESPONSE: config.userResponseSeconds,
@@ -194,7 +202,7 @@ export function advance(
       );
     }
     case 'TIMER_EXPIRED': {
-      expectPhase(state, 'PITCH_A', 'PITCH_B', 'USER_RESPONSE', 'DECIDE');
+      expectPhase(state, 'ONBOARD', 'PITCH_A', 'PITCH_B', 'USER_RESPONSE', 'DECIDE');
       if (state.deadlineAt == null || now < state.deadlineAt) {
         throw new TransitionError(
           'timer has not expired yet (server clock is authoritative)',
@@ -204,10 +212,8 @@ export function advance(
       if (state.phase === 'PITCH_A') return enterPhase(state, 'PITCH_B', now);
       if (state.phase === 'PITCH_B') return enterPhase(state, 'USER_RESPONSE', now);
       if (state.phase === 'USER_RESPONSE') return enterPhase(state, 'DECIDE', now);
-      // DECIDE timed out with no pick: coin-flip is unfair; default to A being
-      // pitched first is unfair too — re-arm DECIDE once, then default A.
-      // Keep it simple and deterministic for the skeleton: default to A.
-      return applyDecision(state, 'A', now);
+      // ONBOARD or DECIDE lapsed with no user input: the user is gone.
+      return { ...state, phase: 'ABANDONED', current: null, deadlineAt: null };
     }
     case 'USER_DECISION': {
       expectPhase(state, 'USER_RESPONSE', 'DECIDE');

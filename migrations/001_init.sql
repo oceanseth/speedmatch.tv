@@ -19,7 +19,12 @@ CREATE TABLE IF NOT EXISTS onboarding_profiles (
   -- Redacted subset safe to hand to a pitching agent (and audible to
   -- spectators). Built server-side; the full profile never leaves the server.
   public_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
-  voice_consent  boolean NOT NULL DEFAULT false,
+  -- Voice cloning consent needs a revocation handle: voice_id is the
+  -- registered Boson voice (voice_<id> from POST /v1/audio/voices) so
+  -- withdrawing consent can actually delete it upstream.
+  voice_consent    boolean NOT NULL DEFAULT false,
+  voice_consent_at timestamptz,
+  voice_id         text,
   updated_at     timestamptz NOT NULL DEFAULT now()
 );
 
@@ -49,12 +54,26 @@ CREATE TABLE IF NOT EXISTS tournaments (
   -- Serialized TournamentState (server/src/tournament/machine.ts) — the
   -- machine is pure/JSON so the DB row is the single source of truth.
   state        jsonb NOT NULL,
-  phase        text  NOT NULL DEFAULT 'LOBBY',
+  -- Optimistic concurrency: every event application must be
+  --   UPDATE tournaments SET state = $new, version = version + 1
+  --   WHERE id = $id AND version = $expected
+  -- and reject on zero rows affected. Two concurrent handlers (double-click,
+  -- reconnect replay) otherwise both advance() from the same snapshot and
+  -- last-write-wins skips a match. Derive session_events.seq from the new
+  -- version so the events PK serializes appends too.
+  version      int NOT NULL DEFAULT 0,
+  -- The public live feed is unauthenticated; default-private is the only
+  -- safe default. The user opts in.
+  is_public    boolean NOT NULL DEFAULT false,
+  -- Derived, cannot drift from state.
+  phase        text GENERATED ALWAYS AS (state->>'phase') STORED,
   winner_id    uuid REFERENCES personas(id),
   created_at   timestamptz NOT NULL DEFAULT now(),
   finished_at  timestamptz
 );
 CREATE INDEX IF NOT EXISTS tournaments_user_idx ON tournaments (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS tournaments_live_feed_idx
+  ON tournaments (created_at DESC) WHERE is_public;
 
 CREATE TABLE IF NOT EXISTS tournament_entrants (
   tournament_id uuid NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
@@ -79,7 +98,9 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 
 -- Append-only event log per tournament: powers spectator catch-up/replay and
--- audit. seq is assigned server-side.
+-- audit (state transitions AND security events like TOKEN_MINTED). seq is
+-- assigned server-side from tournaments.version; the PK rejects a concurrent
+-- duplicate append.
 CREATE TABLE IF NOT EXISTS session_events (
   tournament_id uuid   NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
   seq           bigint NOT NULL,

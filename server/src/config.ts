@@ -12,10 +12,14 @@ export const config = {
   userResponseSeconds: 20,
   /** Time the user gets to pick A or B before the orchestrator nudges. */
   decideSeconds: 15,
+  /** Cap on the onboarding conversation so a session can't park there forever. */
+  onboardSeconds: 300,
   /** Ephemeral Boson client secrets: long enough for one leg, no longer. */
   clientSecretSeconds: 90,
-  /** Token-broker rate limit: mints per user per minute. */
+  /** Token-broker rate limits: per user, per client IP, and process-wide. */
   tokenMintsPerMinute: 10,
+  tokenMintsPerMinutePerIp: 20,
+  tokenMintsPerMinuteGlobal: 120,
 } as const;
 
 export type Category = 'people' | 'products' | 'places';
