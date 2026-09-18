@@ -10,7 +10,10 @@ async function publicRequest(path: string): Promise<unknown | null> {
   // The API lives in the same service by default; no account cookies are forwarded.
   const origin = process.env.TOURNAMENT_API_ORIGIN ?? `http://127.0.0.1:${process.env.PORT ?? "3000"}`;
   const response = await fetch(new URL(path, origin), {
-    cache: "no-store", redirect: "error", signal: AbortSignal.timeout(5000),
+    // Loopback has no CDN in front of it: revalidate here is what actually
+    // cuts DB hits for page renders. Bounded like the route headers so a
+    // visibility withdrawal propagates within ~30s.
+    next: { revalidate: 30 }, redirect: "error", signal: AbortSignal.timeout(5000),
     headers: { Accept: "application/json" },
   });
   if (response.status === 404) return null;

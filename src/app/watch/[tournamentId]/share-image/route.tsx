@@ -26,6 +26,10 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tou
         <span style={{ color: "#c4b5ce", fontSize: 20 }}>15 seconds. One choice.</span>
       </div>
     </div>,
-    { width: 1200, height: 630, headers: { "Cache-Control": "no-store" } },
+    // The whole point of this PNG is being unfurled by every chat app that
+    // sees the link — regenerating 1200×630 per crawler hit is the expensive
+    // path. Bounded (not immutable) so a visibility withdrawal ages out of
+    // caches within minutes; error/404 responses above stay no-store.
+    { width: 1200, height: 630, headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=600" } },
   );
 }

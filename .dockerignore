@@ -5,3 +5,6 @@ node_modules
 .insta
 Dockerfile
 .dockerignore
+
+# local worktrees (contain .next symlink farms the build gateway rejects)
+.worktrees/

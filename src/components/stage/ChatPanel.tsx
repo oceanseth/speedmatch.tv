@@ -33,7 +33,7 @@ export default function ChatPanel({ messages, onSend, disabledReason }: Props) {
   }, [messages.length]);
 
   const send = async () => {
-    const text = sanitizeAnswer(draft, CHAT_MAX_CHARS);
+    const text = sanitizeAnswer(draft, { maxChars: CHAT_MAX_CHARS });
     if (!text || sending) return;
     setSending(true);
     setFailed(false);
@@ -67,7 +67,7 @@ export default function ChatPanel({ messages, onSend, disabledReason }: Props) {
                 {sanitizeAnswer(m.displayName)}
               </span>{" "}
               <span className="text-foreground/90">
-                {sanitizeAnswer(m.text, CHAT_MAX_CHARS)}
+                {sanitizeAnswer(m.text, { maxChars: CHAT_MAX_CHARS })}
               </span>
             </div>
           ),

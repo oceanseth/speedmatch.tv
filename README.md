@@ -85,15 +85,19 @@ managed Postgres, and secrets governance:
 
 Next.js 16 (App Router, TypeScript, Tailwind v4), standalone Docker image on
 port **3000**. Backend core (state machine, Boson token broker, migrations)
-lives in `server/` as a zero-runtime-dependency package.
+lives in `server/` as a zero-runtime-dependency npm workspace. Import shared
+helpers through its declared exports (for example `@speedmatch/server/onboarding`),
+not relative paths into `server/src`. The root lockfile owns both packages.
 
 ## Develop
 
 ```bash
-npm install
+npm ci            # installs the app and server workspace from the root lockfile
 npm run dev        # http://localhost:3000
 npm run build && npm run lint
-cd server && npm test   # backend suite
+npm test
+npm test --workspace @speedmatch/server
+npm run typecheck --workspace @speedmatch/server
 ```
 
 ## Deploy (InstaCloud)

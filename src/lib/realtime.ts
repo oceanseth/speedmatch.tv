@@ -9,9 +9,11 @@
  * PCM16@24kHz via `input_audio_buffer.append`; agent audio comes back as
  * PCM16 deltas and is scheduled onto an AudioContext. Server VAD owns
  * turn-taking; a `speech_started` event flushes local playback so the user
- * can barge in. Established-session survival past key expiry is unverified.
- * Boson closes an invalid/expired key with code 3000, so on 3000 we re-mint and
- * reconnect (capped) instead of silently ending the session.
+ * can barge in. Boson closes an invalid/expired key with code 3000, so on
+ * 3000 we re-mint and reconnect (capped) instead of silently ending the
+ * session. Whether an established session survives its key's expiry is
+ * unverified either way — the reconnect path covers both cases, so don't
+ * remove it on the strength of a TTL assumption.
  */
 
 const SAMPLE_RATE = 24_000;
@@ -162,7 +164,7 @@ export class RealtimeVoiceSession {
     const timeout = setTimeout(() => this.abort.abort(), 15_000);
     try {
     const bootstrap = await fetch("/api/session", { cache: "no-store", signal: this.abort.signal });
-    if (!bootstrap.ok) throw new Error("Voice session setup failed");
+    if (!bootstrap.ok) throw new Error(`Voice session setup failed (${bootstrap.status})`);
     this.ensureOpen();
     const res = await fetch("/api/realtime/token", {
       method: "POST",
@@ -231,6 +233,12 @@ export class RealtimeVoiceSession {
     });
   }
 
+  /**
+   * Close code 3000 is Boson's "invalid or expired ephemeral key". Whether
+   * that can also hit an established session at key expiry is unverified —
+   * either way the answer is a fresh mint and a new socket; the audio
+   * pipeline stays up and mic frames simply resume once the socket reopens.
+   */
   private async handleSocketClose(event: CloseEvent): Promise<void> {
     if (this.closed) return;
     this.flushPlayback();
