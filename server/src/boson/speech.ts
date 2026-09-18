@@ -39,6 +39,33 @@ export function speechLine(
 }
 
 /**
+ * Live-stage variant of `speechLine`: same sanitization, but instead of an
+ * over-long line throwing at `buildSpeechRequest`, the INTERPOLATED values
+ * are trimmed so the assembled line fits `SPEECH_INPUT_MAX` while the
+ * trusted literal script stays intact. A truncated sentence is a far better
+ * on-stage failure than an exception mid-tournament; keep plain `speechLine`
+ * for paths where an over-long value should be treated as a bug. If the
+ * literals ALONE exceed the cap (a script-authoring bug), the whole line is
+ * clamped as a backstop — which can cut a trailing delivery tag, so fix the
+ * script rather than relying on it.
+ */
+export function speechLineClamped(
+  strings: TemplateStringsArray,
+  ...untrusted: unknown[]
+): SpeechSafeInput {
+  const literalLen = strings.reduce((n, s) => n + s.length, 0);
+  let budget = Math.max(0, SPEECH_INPUT_MAX - literalLen);
+  let out = strings[0];
+  for (let i = 0; i < untrusted.length; i++) {
+    let v = sanitizeForSpeech(untrusted[i]);
+    if (v.length > budget) v = v.slice(0, budget);
+    budget -= v.length;
+    out += v + strings[i + 1];
+  }
+  return out.slice(0, SPEECH_INPUT_MAX) as SpeechSafeInput;
+}
+
+/**
  * Escape hatch for genuinely fixed strings (canned show lines, config
  * constants). NEVER pass anything computed from user, chat, profile, or
  * persona data through this — that's what `speechLine` is for.
@@ -66,8 +93,15 @@ export interface SpeechRequestBody {
  */
 export const SPEECH_INPUT_MAX = 2000;
 
-/** Boson preset voices (see personas.voice in migrations/001_init.sql). */
-const VOICE_PRESETS = new Set(['chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver']);
+/**
+ * Boson preset voices (see personas.voice in migrations/001_init.sql).
+ * `belinda` appears in Boson's own API samples though not their preset
+ * table — included so a persona seeded with it fails at seed review, not at
+ * speak time on stage.
+ */
+const VOICE_PRESETS = new Set([
+  'chloe', 'eleanor', 'jake', 'marcus', 'nora', 'oliver', 'belinda',
+]);
 /** Registered voices from POST /v1/audio/voices. */
 const REGISTERED_VOICE_RE = /^voice_[A-Za-z0-9_-]+$/;
 
