@@ -86,9 +86,17 @@ export async function saveProfile(
   if (existing.length > 0) {
     try {
       const prev = parseOnboardingProfile(existing[0].profile);
+      // Clamp the merge to the canonical max (8): keep the user's fresh
+      // answer (slot 0) and the NEWEST orchestrator entries, dropping the
+      // oldest — a full profile must never turn a legitimate re-interview
+      // into a "failed" save.
+      const keep = 8 - canonical.preferences.length;
       canonical = parseOnboardingProfile({
         ...canonical,
-        preferences: [...canonical.preferences, ...prev.preferences.slice(1)],
+        preferences: [
+          ...canonical.preferences,
+          ...prev.preferences.slice(1).slice(-keep),
+        ],
         dealbreakers: prev.dealbreakers,
       });
     } catch {
