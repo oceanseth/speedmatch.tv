@@ -97,6 +97,7 @@ export class RealtimeVoiceSession {
   private closed = false;
   private tournamentId = "";
   private reconnectAttempts = 0;
+  private connectedAt: number | null = null;
   private started = false;
   private abort = new AbortController();
   private cancelOpen: (() => void) | null = null;
@@ -200,6 +201,7 @@ export class RealtimeVoiceSession {
     return new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(minted.wsUrl, minted.subprotocols);
       this.ws = ws;
+      this.connectedAt = null;
       let settled = false;
       const timer = setTimeout(() => finish(new Error("Voice connection timed out")), 15_000);
       const finish = (error?: Error) => {
@@ -213,6 +215,7 @@ export class RealtimeVoiceSession {
       this.cancelOpen = () => finish(new Error("Voice session closed"));
       ws.onopen = () => {
         if (this.closed) { finish(new Error("Voice session closed")); return; }
+        this.connectedAt = performance.now();
         finish();
       };
       ws.onerror = () => {
@@ -241,6 +244,12 @@ export class RealtimeVoiceSession {
    */
   private async handleSocketClose(event: CloseEvent): Promise<void> {
     if (this.closed) return;
+    // Bound bursts of failures, not the lifetime of a long conversation.
+    // Evaluate on close using monotonic time so no reset timer survives Stop.
+    if (this.connectedAt !== null && performance.now() - this.connectedAt >= 30_000) {
+      this.reconnectAttempts = 0;
+    }
+    this.connectedAt = null;
     this.flushPlayback();
     this.micBuffer = new Float32Array(0);
     if (event.code === 3000 && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
