@@ -152,8 +152,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "bad request" }, { status: 400 });
     const cleaned = a.interests
       .filter((i): i is string => typeof i === "string")
-      // NOT point-free: sanitizeAnswer takes (raw, maxChars) and map would
-      // pass the array index as the cap (truncated interests to 0-1 chars).
       .map((i) => sanitizeAnswer(i))
       .filter(Boolean);
     if (cleaned.length > 0) answers.interests = cleaned;
