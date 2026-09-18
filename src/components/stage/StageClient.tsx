@@ -9,6 +9,7 @@ import {
   fetchStage,
   postChat,
   postDecision,
+  postStart,
   type PersonaCard,
   type SessionEvent,
   type StageSnapshot,
@@ -80,6 +81,9 @@ export default function StageClient({ category, tournamentId = null }: { categor
   const [tState, setTState] = useState<TournamentStateSnapshot | null>(null);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [personas, setPersonas] = useState<Record<string, PersonaCard>>({});
+  const [pitchLine, setPitchLine] = useState<string | null>(null);
+  const [startPending, setStartPending] = useState(false);
+  const [startNotice, setStartNotice] = useState<string | null>(null);
   /** Set by the events-poll effect; lets chat/decide refresh immediately. */
   const pollNowRef = useRef<() => void>(() => {});
 
@@ -154,6 +158,8 @@ export default function StageClient({ category, tournamentId = null }: { categor
     setTState(null);
     setEvents([]);
     setPersonas({});
+    setPitchLine(null);
+    setStartNotice(null);
     setManifest([]);
     setUploadedVideo(false);
     setDeletePending(false);
@@ -179,6 +185,7 @@ export default function StageClient({ category, tournamentId = null }: { categor
       const res = await fetchEvents(id, lastSeq);
       if (cancelled || !res.ok) return;
       setTState(res.data.state);
+      setPitchLine(res.data.pitch?.line ?? null);
       if (res.data.personas) {
         setPersonas((prev) => ({ ...prev, ...res.data.personas }));
       }
@@ -353,6 +360,30 @@ export default function StageClient({ category, tournamentId = null }: { categor
     return res.ok;
   };
 
+  /** The server enforces owner+profile; this reports its verdict honestly
+   * instead of guessing client-side. `already_started` means another tab
+   * (or a voice command) won the race — a refresh, not an error. */
+  const startShow = async () => {
+    if (!focusedTournamentId || startPending) return;
+    setStartPending(true);
+    setStartNotice(null);
+    const res = await postStart(focusedTournamentId);
+    if (res.ok || res.error === "already_started") {
+      pollNowRef.current();
+    } else if (res.status === 401) {
+      setStartNotice("Sign in to start your show.");
+    } else if (res.error === "no_profile") {
+      setStartNotice(
+        "Finish the voice interview at /session/new first — the host needs your profile.",
+      );
+    } else if (res.status === 404) {
+      setStartNotice("Only the show’s owner can start it.");
+    } else {
+      setStartNotice("Couldn’t start the show — try again.");
+    }
+    setStartPending(false);
+  };
+
   const decide = async (winner: "A" | "B") => {
     if (!focusedTournamentId || decidePending) return;
     setDecidePending(true);
@@ -360,6 +391,12 @@ export default function StageClient({ category, tournamentId = null }: { categor
     pollNowRef.current();
     setDecidePending(false);
   };
+
+  // Start shows for whoever can already see a LOBBY snapshot (owner via
+  // ?tournament= link, or the stage-holder heuristic) — presentation
+  // only; a non-owner's click gets the server's 404 verdict.
+  const canStart =
+    tState?.phase === "LOBBY" && (onStage || tournamentId != null);
 
   const serverNow = localNow + clockOffset;
   const chatDisabledReason = tournamentId && !tState
@@ -384,6 +421,11 @@ export default function StageClient({ category, tournamentId = null }: { categor
             live={live}
             status={rtStatus}
             caption={caption}
+            pitchLine={pitchLine}
+            canStart={canStart}
+            startPending={startPending}
+            startNotice={startNotice}
+            onStart={() => void startShow()}
             videoRef={videoRef}
             onGoLive={() => void goLive()}
             onLeave={stopMedia}

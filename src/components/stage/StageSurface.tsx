@@ -27,6 +27,14 @@ interface Props {
   live: boolean;
   status: RealtimeStatus | null;
   caption: string;
+  /** Host cue for the running pitch leg — what the host is saying, shown
+   * to spectators who don't hear the owner's voice session. */
+  pitchLine: string | null;
+  /** A LOBBY snapshot is visible to this viewer; server still decides. */
+  canStart: boolean;
+  startPending: boolean;
+  startNotice: string | null;
+  onStart: () => void;
   videoRef: RefObject<HTMLVideoElement | null>;
   onGoLive: () => void;
   onLeave: () => void;
@@ -91,6 +99,11 @@ export default function StageSurface({
   live,
   status,
   caption,
+  pitchLine,
+  canStart,
+  startPending,
+  startNotice,
+  onStart,
   videoRef,
   onGoLive,
   onLeave,
@@ -166,9 +179,11 @@ export default function StageSurface({
           </div>
         )}
 
-        {caption && (
+        {/* Live voice captions win; otherwise the pitch cue fills the same
+            bar so spectators read what the host is saying. */}
+        {(caption || pitchLine) && (
           <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-4 pb-3 pt-8 text-center text-sm font-medium text-white">
-            {caption}
+            {caption || pitchLine}
           </div>
         )}
 
@@ -315,6 +330,24 @@ export default function StageSurface({
               </span>
               <span className="font-mono">{Math.ceil(msLeft / 1000)}s</span>
             </span>
+          )}
+        </div>
+      )}
+
+      {/* Start the show from LOBBY. The server enforces owner + completed
+          profile; the notice below relays its verdict. */}
+      {canStart && (
+        <div className="border-t border-card-border/60 p-3">
+          <button
+            type="button"
+            disabled={startPending}
+            onClick={onStart}
+            className="w-full rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-4 py-2 text-sm font-semibold text-white shadow-lg transition hover:opacity-90 disabled:opacity-50"
+          >
+            {startPending ? "Starting…" : "Start the show"}
+          </button>
+          {startNotice && (
+            <p className="mt-2 text-center text-xs text-red-400">{startNotice}</p>
           )}
         </div>
       )}

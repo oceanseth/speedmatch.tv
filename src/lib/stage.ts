@@ -80,6 +80,33 @@ export interface EventsResponse {
   events: SessionEvent[];
   /** Optional entrant-id → card map; ids render abbreviated without it. */
   personas?: Record<string, PersonaCard>;
+  /** Host cue for the current pitch leg, when one is running. */
+  pitch?: { side: "A" | "B"; personaId: string; line: string } | null;
+}
+
+export interface StartResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+}
+
+/** Owner-only server-side; this just reports the verdict for honest UI. */
+export async function postStart(tournamentId: string): Promise<StartResult> {
+  try {
+    const res = await fetch(
+      `/api/tournaments/${encodeURIComponent(tournamentId)}/start`,
+      { method: "POST" },
+    );
+    let error: string | undefined;
+    try {
+      error = ((await res.json()) as { error?: string }).error;
+    } catch {
+      // body optional
+    }
+    return { ok: res.ok, status: res.status, error };
+  } catch {
+    return { ok: false, status: 0 };
+  }
 }
 
 export type Fetched<T> = { ok: true; data: T } | { ok: false };
