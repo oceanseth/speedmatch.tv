@@ -33,6 +33,8 @@ export type RealtimeStatus =
 export interface RealtimeConnectOptions {
   /** Fixed application prompt, never an authorization or tournament-state boundary. */
   instructions?: string;
+  /** Only play responses explicitly requested by the application. */
+  controlledResponses?: boolean;
 }
 
 export interface RealtimeCallbacks {
@@ -40,7 +42,7 @@ export interface RealtimeCallbacks {
   /** Incremental transcript of what the agent is saying (captions). */
   onCaption?: (delta: string, done: boolean) => void;
   /** Transcript of what the user said (higgs-stt-3.1 input transcription). */
-  onUserCaption?: (delta: string, done: boolean) => void;
+  onUserCaption?: (delta: string, done: boolean, itemId?: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -102,6 +104,9 @@ export class RealtimeVoiceSession {
   private abort = new AbortController();
   private cancelOpen: (() => void) | null = null;
   private options: RealtimeConnectOptions = {};
+  private requestedTurn = 0;
+  private allowedResponse: string | null = null;
+  private completedUserItems = new Set<string>();
 
   constructor(private cb: RealtimeCallbacks = {}) {}
 
@@ -283,6 +288,24 @@ export class RealtimeVoiceSession {
         },
       },
     });
+    if (this.options.controlledResponses && this.options.instructions) {
+      this.speak(this.options.instructions);
+    }
+  }
+
+  /** Refresh the prompt and request one machine-selected utterance. Also kept
+   * in options so credential recovery resumes the current question. */
+  speak(instructions: string) {
+    if (this.closed) return;
+    this.options.instructions = instructions;
+    this.allowedResponse = null;
+    this.flushPlayback();
+    this.cb.onCaption?.("", true);
+    this.send({ type: "session.update", session: { instructions } });
+    this.send({
+      type: "response.create",
+      response: { instructions, metadata: { app_turn: String(++this.requestedTurn) } },
+    });
   }
 
   private pushMic(chunk: Float32Array) {
@@ -308,7 +331,10 @@ export class RealtimeVoiceSession {
       type?: string;
       delta?: string;
       transcript?: string;
-      error?: { message?: string };
+      item_id?: string;
+      response_id?: string;
+      response?: { id?: string; metadata?: { app_turn?: string } };
+      error?: { message?: string; code?: string };
     };
     try {
       evt = JSON.parse(raw);
@@ -316,10 +342,30 @@ export class RealtimeVoiceSession {
       return;
     }
     if (!evt || typeof evt !== "object") return;
+    if (this.options.controlledResponses && evt.type?.startsWith("response.") &&
+        evt.type !== "response.created" &&
+        (!this.allowedResponse || (evt.response_id ?? evt.response?.id) !== this.allowedResponse)) return;
     switch (evt.type) {
+      case "response.created":
+        if (this.options.controlledResponses) {
+          if (evt.response?.metadata?.app_turn === String(this.requestedTurn) && evt.response.id) {
+            this.allowedResponse = evt.response.id;
+          } else if (evt.response?.id) {
+            // VAD can reply before transcription/extraction finishes. It must
+            // never speak an old question or start a free-form interview.
+            this.send({ type: "response.cancel", response_id: evt.response.id });
+          }
+        }
+        break;
       case "input_audio_buffer.speech_started":
         // Barge-in: the user started talking; drop queued agent audio.
         this.flushPlayback();
+        if (this.options.controlledResponses) {
+          this.allowedResponse = null;
+          // Invalidate a requested response whose created event is still in flight.
+          this.requestedTurn++;
+        }
+        this.cb.onCaption?.("", true);
         this.cb.onStatus?.("listening");
         break;
       // Both current and legacy OpenAI-Realtime event names, so a Boson
@@ -343,12 +389,17 @@ export class RealtimeVoiceSession {
         if (evt.delta) this.cb.onUserCaption?.(evt.delta, false);
         break;
       case "conversation.item.input_audio_transcription.completed":
-        this.cb.onUserCaption?.(evt.transcript ?? "", true);
+        if (evt.item_id && this.completedUserItems.has(evt.item_id)) break;
+        if (evt.item_id) this.completedUserItems.add(evt.item_id);
+        this.cb.onUserCaption?.(evt.transcript ?? "", true, evt.item_id);
         break;
       case "response.done":
         this.cb.onStatus?.("connected");
         break;
       case "error":
+        // An automatic response can finish between created and our cancel.
+        if (this.options.controlledResponses &&
+            (evt.error?.code === "response_not_active" || evt.error?.code === "response_id_mismatch")) break;
         this.cb.onError?.(evt.error?.message ?? "realtime error");
         break;
     }

@@ -2,6 +2,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { RealtimeVoiceSession } from "../src/lib/realtime";
 import { createTokenBrokerHandler } from "../server/src/boson/tokenBroker";
+import { onboardingInstructions } from "../src/lib/onboardingVoice";
 
 function harness(t: TestContext, options: { firstClose?: number; sessionStatus?: number } = {}) {
   const sockets: FakeSocket[] = [];
@@ -85,6 +86,48 @@ function harness(t: TestContext, options: { firstClose?: number; sessionStatus?:
   return { sockets, contexts, worklets, calls, stream, get mintCount() { return mintCount; } };
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test("controlled onboarding suppresses VAD replies and only plays the current machine question", async t => {
+  const h = harness(t); const captions: string[] = []; const answers: string[] = [];
+  const client = new RealtimeVoiceSession({
+    onCaption: (text, done) => { if (!done) captions.push(text); },
+    onUserCaption: (text, done) => { if (done) answers.push(text); },
+  });
+  t.after(() => client.close());
+  await client.connect("lobby", h.stream, {
+    controlledResponses: true,
+    instructions: onboardingInstructions({ nextField: "displayName", reply: "What should I call you?" }),
+  });
+  const ws = h.sockets[0];
+  const first = ws.sent.find(e => e.type === "response.create")!;
+  assert.match(JSON.stringify(first), /What should I call you/);
+  ws.receive({ type: "response.created", response: { id: "initial", metadata: { app_turn: "1" } } });
+  ws.receive({ type: "response.output_audio_transcript.delta", response_id: "initial", delta: "What should I call you?" });
+  ws.receive({ type: "input_audio_buffer.speech_started" });
+  ws.receive({ type: "response.created", response: { id: "late-initial", metadata: { app_turn: "1" } } });
+  ws.receive({ type: "response.output_audio_transcript.delta", response_id: "late-initial", delta: "Old question" });
+  ws.receive({ type: "conversation.item.input_audio_transcription.delta", item_id: "answer1", delta: "Al" });
+  ws.receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "answer1", transcript: "Alex" });
+  ws.receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "answer1", transcript: "Alex" });
+  assert.deepEqual(answers, ["Alex"]);
+  ws.receive({ type: "response.created", response: { id: "automatic", metadata: null } });
+  ws.receive({ type: "response.output_audio_transcript.delta", response_id: "automatic", delta: "Tell me your life story" });
+  ws.receive({ type: "response.output_audio.delta", response_id: "automatic", delta: btoa("\0\0") });
+  assert.equal(h.contexts[0].sources.length, 0);
+  assert.ok(ws.sent.some(e => e.type === "response.cancel" && e.response_id === "automatic"));
+  client.speak(onboardingInstructions({ nextField: "seeking", reply: "A person, product, or place?" }));
+  ws.receive({ type: "response.created", response: { id: "next", metadata: { app_turn: "3" } } });
+  ws.receive({ type: "response.output_audio_transcript.delta", response_id: "initial", delta: "Old question" });
+  ws.receive({ type: "response.output_audio_transcript.delta", response_id: "next", delta: "A person, product, or place?" });
+  ws.receive({ type: "response.output_audio.delta", response_id: "next", delta: btoa("\0\0") });
+  assert.equal(h.contexts[0].sources.length, 1);
+  assert.deepEqual(captions, ["What should I call you?", "A person, product, or place?"]);
+  client.speak(onboardingInstructions({ nextField: null, reply: "Ready to open the bracket?" }));
+  assert.equal(h.contexts[0].sources[0].stopped, true);
+  h.sockets[0].serverClose(3000); await tick();
+  assert.match(JSON.stringify(h.sockets[1].sent), /interview is complete/);
+  assert.match(JSON.stringify(h.sockets[1].sent), /Ready to open the bracket/);
+});
 
 test("actual broker response reaches Boson framing, mic PCM and spoken audio/captions", async t => {
   const h = harness(t); const host: string[] = []; const user: string[] = [];
