@@ -6,11 +6,33 @@ import {
   type PersonaLite,
   type TournamentSummary,
 } from "../../../lib/matches";
-import { roundLabel } from "../../../lib/types";
+import { roundLabel, type Avatar } from "../../../lib/types";
 
 export const metadata: Metadata = {
   title: "My Matches — SpeedMatch.tv",
 };
+
+// Same three-kind rendering as LiveShowcase so image/stream personas
+// never fall through to a blank space.
+function AvatarGlyph({ avatar, size }: { avatar: Avatar; size: number }) {
+  return (
+    <>
+      {avatar.kind === "emoji" && avatar.value}
+      {avatar.kind === "image" && (
+        // Hosts must be allowlisted server-side before user-supplied
+        // URLs reach this page (viewer-IP beacon otherwise).
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={avatar.value}
+          alt=""
+          className="inline-block rounded-md object-cover align-text-bottom"
+          style={{ height: size, width: size }}
+        />
+      )}
+      {avatar.kind === "stream" && <span>🎥</span>}
+    </>
+  );
+}
 
 function Entrant({
   persona,
@@ -31,9 +53,9 @@ function Entrant({
             : "text-muted line-through decoration-card-border"
       }
     >
-      {persona.avatar.kind === "emoji" && (
-        <span className="mr-1">{persona.avatar.value}</span>
-      )}
+      <span className="mr-1">
+        <AvatarGlyph avatar={persona.avatar} size={16} />
+      </span>
       {persona.name}
     </span>
   );
@@ -65,7 +87,9 @@ function MatchRow({ match }: { match: MatchRecord }) {
 
 function TournamentCard({ t }: { t: TournamentSummary }) {
   const totalRounds = Math.log2(t.bracketSize);
-  const rounds = [...new Set(t.matches.map((m) => m.round))].sort();
+  const rounds = [...new Set(t.matches.map((m) => m.round))].sort(
+    (a, b) => a - b,
+  );
   const date = new Date(t.createdAt).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -87,7 +111,7 @@ function TournamentCard({ t }: { t: TournamentSummary }) {
       {t.winner ? (
         <div className="mb-4 flex items-center gap-3 rounded-lg bg-background p-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-card text-2xl">
-            {t.winner.avatar.kind === "emoji" && t.winner.avatar.value}
+            <AvatarGlyph avatar={t.winner.avatar} size={36} />
           </div>
           <div>
             <div className="text-xs uppercase tracking-wider text-muted">
