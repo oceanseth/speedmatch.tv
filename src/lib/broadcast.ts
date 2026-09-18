@@ -74,8 +74,12 @@ export interface BroadcastTransport {
     chunk: { seq: number; contentType: string; contentLength: number },
   ): Promise<{ url: string } | null>;
   putChunk(url: string, blob: Blob, contentType: string): Promise<boolean>;
-  /** Withdraw consent: stop accepting mints and delete uploaded chunks. */
-  revoke(tournamentId: string): Promise<void>;
+  /**
+   * Withdraw consent: stop accepting mints and delete uploaded chunks.
+   * Resolves true only when the server confirmed the deletion — the UI
+   * keeps the delete action available until it does.
+   */
+  revoke(tournamentId: string): Promise<boolean>;
 }
 
 /** Provisional HTTP shapes — confirm against the server PR before relying
@@ -113,13 +117,13 @@ export function httpBroadcastTransport(): BroadcastTransport {
     },
     async revoke(tournamentId) {
       try {
-        await fetch(
+        const res = await fetch(
           `/api/tournaments/${encodeURIComponent(tournamentId)}/broadcast/revoke`,
           { method: "POST" },
         );
+        return res.ok;
       } catch {
-        // Best-effort from this client; the server-side per-chunk
-        // ownership re-check is the enforcement layer.
+        return false;
       }
     },
   };
@@ -201,10 +205,11 @@ export class BroadcastRecorder {
     this.finish("stopped", "stopped");
   }
 
-  /** Consent withdrawal — also deletes what was already uploaded. */
-  async revoke(): Promise<void> {
+  /** Consent withdrawal — also deletes what was already uploaded.
+   * Resolves true only when the server confirmed the deletion. */
+  async revoke(): Promise<boolean> {
     this.finish("stopped", "revoked");
-    await this.transport.revoke(this.tournamentId);
+    return this.transport.revoke(this.tournamentId);
   }
 
   private setStatus(status: BroadcastStatus, reason?: BroadcastStopReason) {
@@ -355,6 +360,77 @@ export function foldManifest(
   return [...bySeq.values()]
     .sort((a, b) => a.seq - b.seq)
     .slice(-MAX_MANIFEST_ENTRIES);
+}
+
+/**
+ * Local memory of shows this browser uploaded broadcast video to, so the
+ * "delete my video" consent action stays reachable after the broadcast —
+ * and even the stage — are gone (post-stop on the stage page, and from
+ * My Matches when someone reconsiders later). Entries clear only on a
+ * server-confirmed deletion; storage failures degrade to "no memory",
+ * never to a thrown error.
+ */
+const UPLOADS_STORAGE_KEY = "sm-broadcast-uploads";
+export const MAX_UPLOADS_REMEMBERED = 20;
+
+export interface RememberedBroadcast {
+  tournamentId: string;
+  /** Epoch ms of the first chunk uploaded in that show. */
+  at: number;
+}
+
+function readRememberedBroadcasts(): RememberedBroadcast[] {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(UPLOADS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e): e is RememberedBroadcast =>
+        typeof e === "object" &&
+        e !== null &&
+        typeof (e as RememberedBroadcast).tournamentId === "string" &&
+        typeof (e as RememberedBroadcast).at === "number",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeRememberedBroadcasts(entries: RememberedBroadcast[]) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(
+      UPLOADS_STORAGE_KEY,
+      JSON.stringify(entries.slice(-MAX_UPLOADS_REMEMBERED)),
+    );
+  } catch {
+    // Quota or privacy mode: we lose the reminder, not the broadcast.
+  }
+}
+
+export function rememberBroadcastUpload(tournamentId: string): void {
+  const entries = readRememberedBroadcasts();
+  if (entries.some((e) => e.tournamentId === tournamentId)) return;
+  writeRememberedBroadcasts([...entries, { tournamentId, at: Date.now() }]);
+}
+
+export function forgetBroadcastUpload(tournamentId: string): void {
+  const entries = readRememberedBroadcasts();
+  const next = entries.filter((e) => e.tournamentId !== tournamentId);
+  if (next.length !== entries.length) writeRememberedBroadcasts(next);
+}
+
+export function hasBroadcastUpload(tournamentId: string): boolean {
+  return readRememberedBroadcasts().some(
+    (e) => e.tournamentId === tournamentId,
+  );
+}
+
+/** Remembered uploads, newest first (for the My Matches consent panel). */
+export function listBroadcastUploads(): RememberedBroadcast[] {
+  return readRememberedBroadcasts().reverse();
 }
 
 /**

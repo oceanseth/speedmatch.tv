@@ -5,10 +5,15 @@ import {
   LIVE_JOIN_BACKLOG,
   MAX_MANIFEST_ENTRIES,
   MAX_PENDING_UPLOADS,
+  MAX_UPLOADS_REMEMBERED,
   MAX_UPLOAD_FAILURES,
   foldManifest,
+  forgetBroadcastUpload,
+  hasBroadcastUpload,
+  listBroadcastUploads,
   nextChunkToFetch,
   pickBroadcastMime,
+  rememberBroadcastUpload,
   type BroadcastStatus,
   type BroadcastStopReason,
   type BroadcastTransport,
@@ -37,6 +42,7 @@ class FakeRecorder implements RecorderLike {
 function harness(options: {
   mint?: (seq: number) => { url: string } | null;
   put?: (seq: number) => boolean | Promise<boolean>;
+  revoke?: () => boolean;
 } = {}) {
   const recorders: FakeRecorder[] = [];
   const timers: (() => void)[] = [];
@@ -56,6 +62,7 @@ function harness(options: {
     },
     async revoke() {
       revokes += 1;
+      return options.revoke ? options.revoke() : true;
     },
   };
   const recorder = new BroadcastRecorder(
@@ -195,6 +202,56 @@ test("revoke() stops capture and asks the server to delete uploaded chunks", asy
   h.endChunk();
   await settle();
   assert.deepEqual(h.uploaded, [0]);
+});
+
+test("revoke() resolves with the server's deletion confirmation", async () => {
+  const confirmed = harness();
+  confirmed.recorder.start();
+  assert.equal(await confirmed.recorder.revoke(), true);
+  // A failed server delete reports false so the UI keeps the action alive.
+  const failed = harness({ revoke: () => false });
+  failed.recorder.start();
+  assert.equal(await failed.recorder.revoke(), false);
+  assert.equal(failed.revokeCount(), 1);
+});
+
+test("broadcast upload memory: remembered until confirmed deletion, capped, storage-safe", () => {
+  // No localStorage at all (SSR/node): safe no-ops, never a throw.
+  assert.equal(hasBroadcastUpload("t-1"), false);
+  rememberBroadcastUpload("t-1");
+  assert.deepEqual(listBroadcastUploads(), []);
+
+  const store = new Map<string, string>();
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+  };
+  try {
+    rememberBroadcastUpload("t-1");
+    rememberBroadcastUpload("t-1"); // dedupe keeps the first-upload time
+    rememberBroadcastUpload("t-2");
+    assert.equal(hasBroadcastUpload("t-1"), true);
+    assert.deepEqual(
+      listBroadcastUploads().map((u) => u.tournamentId),
+      ["t-2", "t-1"], // newest first
+    );
+    forgetBroadcastUpload("t-1");
+    assert.equal(hasBroadcastUpload("t-1"), false);
+    assert.equal(hasBroadcastUpload("t-2"), true);
+    // Corrupt storage degrades to "no memory", not a throw.
+    store.set("sm-broadcast-uploads", "{nope");
+    assert.deepEqual(listBroadcastUploads(), []);
+    // Cap: only the newest MAX_UPLOADS_REMEMBERED survive.
+    store.delete("sm-broadcast-uploads");
+    for (let i = 0; i < MAX_UPLOADS_REMEMBERED + 5; i++) {
+      rememberBroadcastUpload(`t-${i}`);
+    }
+    assert.equal(listBroadcastUploads().length, MAX_UPLOADS_REMEMBERED);
+    assert.equal(hasBroadcastUpload("t-0"), false);
+    assert.equal(hasBroadcastUpload(`t-${MAX_UPLOADS_REMEMBERED + 4}`), true);
+  } finally {
+    delete (globalThis as { localStorage?: unknown }).localStorage;
+  }
 });
 
 test("start() is idempotent and does nothing after a stop", () => {

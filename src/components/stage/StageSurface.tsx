@@ -36,10 +36,16 @@ interface Props {
   /** Camera chunks are actively being uploaded for spectators. */
   broadcasting: boolean;
   broadcastNotice: string | null;
+  /** Uploaded chunks from this show exist without a confirmed deletion. */
+  hasUploadedVideo: boolean;
+  deletePending: boolean;
   /** Spectator-facing chunk manifest from the events poll. */
   manifest: BroadcastChunkRef[];
   onBroadcastStart: () => void;
-  onBroadcastStop: (revoke: boolean) => void;
+  /** Local stop — uploaded chunks stay for replay per their server TTL. */
+  onBroadcastStop: () => void;
+  /** Withdraw consent — server deletes this show's uploaded chunks. */
+  onDeleteVideo: () => void;
 }
 
 function ContestantTile({
@@ -93,9 +99,12 @@ export default function StageSurface({
   mediaError,
   broadcasting,
   broadcastNotice,
+  hasUploadedVideo,
+  deletePending,
   manifest,
   onBroadcastStart,
   onBroadcastStop,
+  onDeleteVideo,
 }: Props) {
   const phase = state?.phase ?? slot?.phase ?? null;
   const currentMatch =
@@ -105,6 +114,10 @@ export default function StageSurface({
   const msLeft =
     state?.deadlineAt != null ? Math.max(0, state.deadlineAt - serverNow) : null;
   const orchestratorBusy = status === "speaking";
+  // Deleting uploaded video is a consent action, not a broadcast control:
+  // it must stay reachable after the broadcast stops and even after the
+  // stage is lost (while broadcasting, "Stop & delete video" covers it).
+  const showDeleteVideo = hasUploadedVideo && !broadcasting;
 
   return (
     <div className="overflow-hidden rounded-xl border border-card-border bg-card">
@@ -159,53 +172,65 @@ export default function StageSurface({
           </div>
         )}
 
-        {onStage && (
+        {(onStage || showDeleteVideo) && (
           <div className="absolute right-3 top-3 flex flex-wrap justify-end gap-2">
-            {!live ? (
-              <button
-                type="button"
-                onClick={onGoLive}
-                className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-4 py-1.5 text-sm font-semibold text-white shadow-lg transition hover:opacity-90"
-              >
-                Go live — camera & mic
-              </button>
-            ) : (
-              <>
-                {!broadcasting ? (
-                  <button
-                    type="button"
-                    onClick={onBroadcastStart}
-                    className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-4 py-1.5 text-sm font-semibold text-white shadow-lg transition hover:opacity-90"
-                  >
-                    Broadcast camera to viewers
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => onBroadcastStop(false)}
-                      className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
-                    >
-                      Stop broadcast
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onBroadcastStop(true)}
-                      className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
-                      title="Stop broadcasting and delete the video uploaded so far"
-                    >
-                      Stop & delete video
-                    </button>
-                  </>
-                )}
+            {onStage &&
+              (!live ? (
                 <button
                   type="button"
-                  onClick={onLeave}
-                  className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
+                  onClick={onGoLive}
+                  className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-4 py-1.5 text-sm font-semibold text-white shadow-lg transition hover:opacity-90"
                 >
-                  Leave stage
+                  Go live — camera & mic
                 </button>
-              </>
+              ) : (
+                <>
+                  {!broadcasting ? (
+                    <button
+                      type="button"
+                      onClick={onBroadcastStart}
+                      className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-4 py-1.5 text-sm font-semibold text-white shadow-lg transition hover:opacity-90"
+                    >
+                      Broadcast camera to viewers
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={onBroadcastStop}
+                        className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
+                      >
+                        Stop broadcast
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onDeleteVideo}
+                        disabled={deletePending}
+                        className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400 disabled:opacity-50"
+                        title="Stop broadcasting and delete the video uploaded so far"
+                      >
+                        Stop & delete video
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={onLeave}
+                    className="rounded-full border border-card-border bg-card/80 px-4 py-1.5 text-sm font-medium backdrop-blur transition hover:border-red-400"
+                  >
+                    Leave stage
+                  </button>
+                </>
+              ))}
+            {showDeleteVideo && (
+              <button
+                type="button"
+                onClick={onDeleteVideo}
+                disabled={deletePending}
+                className="rounded-full border border-red-400/60 bg-card/80 px-4 py-1.5 text-sm font-medium text-red-400 backdrop-blur transition hover:bg-red-500/10 disabled:opacity-50"
+              >
+                {deletePending ? "Deleting…" : "Delete my video from this show"}
+              </button>
             )}
           </div>
         )}

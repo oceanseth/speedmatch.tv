@@ -38,7 +38,9 @@ function loopbackTransport(
       onChunk({ seq, url: URL.createObjectURL(blob) });
       return true;
     },
-    async revoke() {},
+    async revoke() {
+      return true;
+    },
   };
 }
 

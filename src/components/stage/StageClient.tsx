@@ -18,7 +18,10 @@ import { RealtimeVoiceSession, type RealtimeStatus } from "../../lib/realtime";
 import {
   BroadcastRecorder,
   foldManifest,
+  forgetBroadcastUpload,
+  hasBroadcastUpload,
   httpBroadcastTransport,
+  rememberBroadcastUpload,
   type BroadcastChunkRef,
 } from "../../lib/broadcast";
 import StageSurface from "./StageSurface";
@@ -89,6 +92,11 @@ export default function StageClient({ category, tournamentId = null }: { categor
   const [decidePending, setDecidePending] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
   const [broadcastNotice, setBroadcastNotice] = useState<string | null>(null);
+  /** Chunks from this show exist on the server without a confirmed
+   * deletion — keeps the "delete my video" consent action reachable
+   * after the broadcast (and even the stage) are gone. */
+  const [uploadedVideo, setUploadedVideo] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
   const [manifest, setManifest] = useState<BroadcastChunkRef[]>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -147,7 +155,18 @@ export default function StageClient({ category, tournamentId = null }: { categor
     setEvents([]);
     setPersonas({});
     setManifest([]);
+    setUploadedVideo(false);
+    setDeletePending(false);
   }
+
+  // Load upload memory per focused tournament; deferred (like the stored
+  // name) so hydration completes before localStorage-driven UI lands.
+  useEffect(() => {
+    if (!focusedTournamentId) return;
+    const id = focusedTournamentId;
+    const t = setTimeout(() => setUploadedVideo(hasBroadcastUpload(id)), 0);
+    return () => clearTimeout(t);
+  }, [focusedTournamentId]);
 
   // Events poll follows the focused tournament; the seq cursor lives in
   // the effect so a focus switch starts clean.
@@ -193,14 +212,35 @@ export default function StageClient({ category, tournamentId = null }: { categor
     snapshot.main.seeker === sanitizeAnswer(myName, { maxChars: 60 });
 
   /** Local stop: uploaded chunks stay for replay per their server TTL.
-   * With `revoke`, consent is withdrawn and the server deletes them. */
-  const stopBroadcast = useCallback((revoke = false) => {
+   * Deleting them is a separate consent action (deleteVideo), reachable
+   * whether or not a broadcast is running. */
+  const stopBroadcast = useCallback(() => {
     const rec = broadcastRef.current;
     broadcastRef.current = null;
     setBroadcasting(false);
-    if (!rec) return;
-    if (revoke) void rec.revoke();
-    else rec.stop();
+    rec?.stop();
+  }, []);
+
+  /** Withdraw consent: stop any live broadcast and have the server delete
+   * the uploaded chunks. Revoke is a plain POST, not a recorder method, so
+   * this works after stopping, after losing the stage, and after reloads —
+   * the upload memory clears only on server-confirmed deletion. */
+  const deleteVideo = useCallback(async (tournamentId: string) => {
+    setDeletePending(true);
+    const rec = broadcastRef.current;
+    broadcastRef.current = null;
+    setBroadcasting(false);
+    const ok = rec
+      ? await rec.revoke()
+      : await httpBroadcastTransport().revoke(tournamentId);
+    if (ok) {
+      forgetBroadcastUpload(tournamentId);
+      setUploadedVideo(false);
+      setBroadcastNotice(null);
+    } else {
+      setBroadcastNotice("Couldn’t delete your video — try again.");
+    }
+    setDeletePending(false);
   }, []);
 
   const stopMedia = useCallback(() => {
@@ -264,12 +304,17 @@ export default function StageClient({ category, tournamentId = null }: { categor
   const startBroadcast = () => {
     if (!focusedTournamentId || !mediaStreamRef.current || broadcastRef.current)
       return;
+    const id = focusedTournamentId;
     setBroadcastNotice(null);
     const recorder = new BroadcastRecorder(
-      focusedTournamentId,
+      id,
       mediaStreamRef.current,
       httpBroadcastTransport(),
       {
+        onChunkUploaded: () => {
+          rememberBroadcastUpload(id);
+          setUploadedVideo(true);
+        },
         onStatus: (status, reason) => {
           if (status === "broadcasting") {
             setBroadcasting(true);
@@ -347,9 +392,15 @@ export default function StageClient({ category, tournamentId = null }: { categor
             mediaError={mediaError}
             broadcasting={broadcasting}
             broadcastNotice={broadcastNotice}
+            hasUploadedVideo={uploadedVideo}
+            deletePending={deletePending}
             manifest={manifest}
             onBroadcastStart={startBroadcast}
             onBroadcastStop={stopBroadcast}
+            onDeleteVideo={() => {
+              if (focusedTournamentId && !deletePending)
+                void deleteVideo(focusedTournamentId);
+            }}
           />
 
           {/* Chat <-> live bracket toggle under the video surface. */}

@@ -8,6 +8,7 @@ import {
 } from "../../../lib/matches";
 import AvatarGlyph from "../../../components/AvatarGlyph";
 import { roundLabel } from "../../../lib/types";
+import BroadcastVideoPanel from "./BroadcastVideoPanel";
 
 export const metadata: Metadata = {
   title: "My Matches — SpeedMatch.tv",
@@ -142,6 +143,7 @@ export default function MyMatches() {
           Showing demo history — sign-in and personal match history land with
           accounts.
         </div>
+        <BroadcastVideoPanel />
         <div className="mt-6 space-y-5">
           {tournaments.map((t) => (
             <TournamentCard key={t.id} t={t} />
