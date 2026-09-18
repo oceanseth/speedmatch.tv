@@ -24,6 +24,10 @@ export const config = {
    * unauthenticated junk must not be able to exhaust it (that would turn a
    * spend attack into an availability attack on real users).
    */
+  // PER-PROCESS, not per-deployment: the limiter lives in module scope, so
+  // N compute replicas mean an effective N×120/min against one prepaid
+  // Boson balance. Revisit (shared store or divide by replica count) before
+  // scaling compute past one machine.
   tokenMintsPerMinuteGlobal: 120,
   /** Cheap pre-auth cap on raw request volume, well above legit traffic. */
   tokenRequestsPerMinutePreAuth: 600,
