@@ -135,6 +135,7 @@ test('handler: unauthenticated junk cannot exhaust the mint budget', async () =>
     authorize: async (req) =>
       req.headers.get('x-user') ? { userId: 'u1', tournamentId: 't1' } : null,
     globalLimiter: new RateLimiter(1), // mint budget of exactly 1
+    ipLimiter: new RateLimiter(100), // not the dimension under test
     mint: async () => ({ value: 'bai-eph-xyz', expiresAt: 999, sessionId: null }),
   });
   // 20 junk requests answer 401 without touching the mint budget…
