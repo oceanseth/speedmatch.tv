@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import Header from "../../../components/Header";
+import OnboardingVoice from "../../../components/OnboardingVoice";
 import type {
   OnboardField,
   OnboardResponse,
@@ -11,6 +12,7 @@ import type {
 import { MAX_ANSWER_CHARS } from "../../../lib/onboarding";
 
 interface Turn {
+  id?: string;
   who: "host" | "you";
   text: string;
 }
@@ -39,7 +41,7 @@ export default function NewSession() {
   const [profile, setProfile] = useState<OnboardingProfile | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [hostTalking, setHostTalking] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const started = useRef(false);
 
@@ -49,7 +51,6 @@ export default function NewSession() {
     message: string,
   ) => {
     setBusy(true);
-    setHostTalking(true);
     try {
       const res = await fetch("/api/onboard", {
         method: "POST",
@@ -73,8 +74,6 @@ export default function NewSession() {
       ]);
     } finally {
       setBusy(false);
-      // Brief talking pulse; real lip-synced TTS replaces this.
-      setTimeout(() => setHostTalking(false), 900);
     }
   };
 
@@ -91,7 +90,7 @@ export default function NewSession() {
 
   const send = (text: string) => {
     const msg = text.trim();
-    if (!msg || busy || !field) return;
+    if (!msg || busy || voiceActive || !field) return;
     setTurns((t) => [...t, { who: "you", text: msg }]);
     setInput("");
     step(answers, field, msg);
@@ -103,19 +102,14 @@ export default function NewSession() {
     <>
       <Header />
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-8">
-        {/* Host tile */}
+        <OnboardingVoice onActive={setVoiceActive} onTurn={(id, who, text) => {
+          setTurns(previous => {
+            const index = previous.findIndex(turn => turn.id === id);
+            if (index < 0) return [...previous, { id, who, text }].slice(-100);
+            return previous.map((turn, i) => i === index ? { id, who, text } : turn);
+          });
+        }} />
         <div className="mb-6 flex flex-col items-center">
-          <div
-            className={`flex h-28 w-28 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-pink to-brand-purple text-5xl shadow-lg shadow-brand-purple/30 transition-transform ${
-              hostTalking ? "scale-105" : ""
-            }`}
-          >
-            🎙️
-          </div>
-          <div className="mt-3 flex items-center gap-2 text-sm text-muted">
-            <span className={`h-2 w-2 rounded-full bg-green-400 ${hostTalking ? "live-dot" : ""}`} />
-            Your host{hostTalking ? " — speaking…" : ""}
-          </div>
           {/* Progress */}
           <div className="mt-4 flex gap-1.5">
             {FIELD_ORDER.map((f) => (
@@ -143,7 +137,7 @@ export default function NewSession() {
         >
           {turns.map((t, i) => (
             <div
-              key={i}
+              key={t.id ?? i}
               className={`max-w-[85%] rounded-xl px-4 py-2.5 text-sm leading-relaxed ${
                 t.who === "host"
                   ? "bg-card text-foreground"
@@ -200,13 +194,14 @@ export default function NewSession() {
           </div>
         ) : (
           <div className="mt-4">
+            {voiceActive && <p className="mb-3 text-sm text-muted">Voice conversation is live. Stop the microphone to continue your written profile.</p>}
             {suggestions.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
                 {suggestions.map((s) => (
                   <button
                     key={s}
                     type="button"
-                    disabled={busy}
+                    disabled={busy || voiceActive}
                     onClick={() => send(s)}
                     className="rounded-full border border-card-border bg-card px-4 py-1.5 text-sm transition hover:border-brand-purple"
                   >
@@ -222,14 +217,6 @@ export default function NewSession() {
                 send(input);
               }}
             >
-              <button
-                type="button"
-                disabled
-                title="Voice replies land with the realtime build"
-                className="cursor-not-allowed rounded-full border border-card-border bg-card px-4 py-2.5 opacity-50"
-              >
-                🎤
-              </button>
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -237,12 +224,12 @@ export default function NewSession() {
                 placeholder={
                   field ? `Your ${FIELD_LABELS[field]}…` : "One moment…"
                 }
-                disabled={busy || !field}
+                disabled={busy || voiceActive || !field}
                 className="flex-1 rounded-full border border-card-border bg-card px-4 py-2.5 text-sm outline-none transition focus:border-brand-purple"
               />
               <button
                 type="submit"
-                disabled={busy || !field || !input.trim()}
+                disabled={busy || voiceActive || !field || !input.trim()}
                 className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-6 py-2.5 text-sm font-semibold text-white transition disabled:opacity-50"
               >
                 Send
