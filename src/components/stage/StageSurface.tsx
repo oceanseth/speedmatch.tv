@@ -13,6 +13,7 @@ import type {
 import { MATCH_PHASES, PHASE_LABELS } from "../../lib/stage";
 
 interface Props {
+  waitingForTournament?: boolean;
   slot: StageSlot | null;
   state: TournamentStateSnapshot | null;
   personas: Record<string, PersonaCard>;
@@ -66,6 +67,7 @@ function ContestantTile({
 }
 
 export default function StageSurface({
+  waitingForTournament = false,
   slot,
   state,
   personas,
@@ -123,9 +125,11 @@ export default function StageSurface({
             ) : (
               <>
                 <div className="text-3xl">🎬</div>
-                <div className="text-lg font-semibold">The stage is open</div>
+                <div className="text-lg font-semibold">{waitingForTournament ? "Tournament lobby" : "The stage is open"}</div>
                 <p className="max-w-sm px-4 text-sm text-muted">
-                  Apply from the queue panel and the host will call you up.
+                  {waitingForTournament
+                    ? "Your tournament is selected. Waiting for the host and live tournament updates."
+                    : "Apply from the queue panel and the host will call you up."}
                 </p>
               </>
             )}

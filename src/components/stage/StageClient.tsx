@@ -58,7 +58,7 @@ function toChatMessages(events: SessionEvent[]): ChatMessage[] {
   return out;
 }
 
-export default function StageClient({ category }: { category: Category }) {
+export default function StageClient({ category, tournamentId = null }: { category: Category; tournamentId?: string | null }) {
   const [snapshot, setSnapshot] = useState<StageSnapshot | null>(null);
   const [offline, setOffline] = useState(false);
   const [clockOffset, setClockOffset] = useState(0);
@@ -123,9 +123,10 @@ export default function StageClient({ category }: { category: Category }) {
     };
   }, [category]);
 
-  const focusedSlot =
-    (focus === "side" ? snapshot?.side : snapshot?.main) ?? null;
-  const focusedTournamentId = focusedSlot?.tournamentId ?? null;
+  const focusedSlot = tournamentId
+    ? [snapshot?.main, snapshot?.side].find(slot => slot?.tournamentId === tournamentId) ?? null
+    : (focus === "side" ? snapshot?.side : snapshot?.main) ?? null;
+  const focusedTournamentId = tournamentId ?? focusedSlot?.tournamentId ?? null;
 
   // Reset per-tournament state the moment focus switches — the
   // adjust-state-during-render pattern, so no effect-driven cascade.
@@ -173,6 +174,7 @@ export default function StageClient({ category }: { category: Category }) {
   // ownership on every privileged call (token mint, decision); this only
   // decides which UI to show. Replaced when minimal auth lands.
   const onStage =
+    (!tournamentId || snapshot?.main?.tournamentId === tournamentId) &&
     focus === "main" &&
     snapshot?.main != null &&
     myName.trim() !== "" &&
@@ -259,7 +261,9 @@ export default function StageClient({ category }: { category: Category }) {
   };
 
   const serverNow = localNow + clockOffset;
-  const chatDisabledReason = !focusedTournamentId
+  const chatDisabledReason = tournamentId && !tState
+    ? "Chat opens when live tournament updates are available."
+    : !focusedTournamentId
     ? offline
       ? "Stage backend isn’t reachable yet."
       : "Chat opens when a session takes this stage."
@@ -267,9 +271,10 @@ export default function StageClient({ category }: { category: Category }) {
 
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
+      <div className={`grid gap-4 ${tournamentId ? "" : "lg:grid-cols-[minmax(0,1fr)_300px]"}`}>
         <div className="flex min-w-0 flex-col gap-4">
           <StageSurface
+            waitingForTournament={!!tournamentId}
             slot={focusedSlot}
             state={tState}
             personas={personas}
@@ -306,7 +311,7 @@ export default function StageClient({ category }: { category: Category }) {
               <span className="ml-auto self-center pr-4 text-xs text-muted">
                 {focusedSlot
                   ? `Watching ${sanitizeAnswer(focusedSlot.seeker)}`
-                  : "Stage idle"}
+                  : tournamentId ? "Tournament selected" : "Stage idle"}
               </span>
             </div>
             <div className="min-h-0 flex-1">
@@ -323,7 +328,7 @@ export default function StageClient({ category }: { category: Category }) {
           </div>
         </div>
 
-        <QueueRail
+        {!tournamentId && <QueueRail
           side={snapshot?.side ?? null}
           queue={snapshot?.queue ?? []}
           myName={myName}
@@ -333,7 +338,7 @@ export default function StageClient({ category }: { category: Category }) {
           offline={offline}
           sideFocused={focus === "side"}
           onToggleFocus={() => setFocus(focus === "side" ? "main" : "side")}
-        />
+        />}
       </div>
     </main>
   );
