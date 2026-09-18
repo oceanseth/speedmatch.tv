@@ -7,8 +7,25 @@ import {
   type OnboardingProfile,
 } from "../../../lib/onboarding";
 import type { Category } from "../../../lib/types";
+import { loadProfile, saveProfile } from "../../../lib/onboardingStore";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Returning users skip the interview: the saved profile for the signed-in
+ * account, or null for anonymous / first-timers.
+ */
+export async function GET(req: Request) {
+  try {
+    const profile = await loadProfile(req.headers);
+    return NextResponse.json(
+      { profile },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  } catch {
+    return NextResponse.json({ error: "unavailable" }, { status: 503 });
+  }
+}
 
 // Scripted host flow, stateless per request: the client holds the answers
 // collected so far, the server decides the next question and sanitizes
@@ -196,12 +213,20 @@ export async function POST(req: Request) {
   const nextField = nextMissing(answers);
   if (nextField === null) {
     const profile = answers as OnboardingProfile;
+    // Signed-in users keep their answers (Seth's live-test finding: the
+    // interview evaporated). Anonymous completions still work — saved:false
+    // lets the UI say "sign in to keep this".
+    const saved = await saveProfile(req.headers, profile).catch((err) => {
+      console.error("[onboard] profile save failed", err);
+      return false;
+    });
     const res: OnboardResponse = {
       reply: `Perfect, ${profile.displayName} — I've got what I need. I'll brief the contestants with a summary (never your exact words). Ready to open the bracket?`,
       nextField: null,
       done: true,
       answers,
       profile,
+      saved,
     };
     return NextResponse.json(res, { headers: { "Cache-Control": "no-store" } });
   }

@@ -33,6 +33,9 @@ export interface OnboardResponse {
   done: boolean;
   answers: Partial<OnboardingProfile>;
   profile?: OnboardingProfile;
+  /** Present on done: whether the profile was persisted to the signed-in
+   * account (false/absent = anonymous — sign in to keep it). */
+  saved?: boolean;
 }
 
 export const MAX_ANSWER_CHARS = 200;

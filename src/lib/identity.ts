@@ -1,4 +1,3 @@
-import "server-only";
 import { auth } from "./auth";
 import { query } from "./db";
 
