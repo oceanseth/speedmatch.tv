@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0b0616;
+  --foreground: #f4f1fa;
+  --muted: #bdb3d6;
+  --brand-pink: #ff5da2;
+  --brand-purple: #a05dff;
+  --card: #171028;
+  --card-border: #2b2044;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-brand-pink: var(--brand-pink);
+  --color-brand-purple: var(--brand-purple);
+  --color-card: var(--card);
+  --color-card-border: var(--card-border);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: radial-gradient(ellipse at 50% 0%, #1c1033 0%, #0b0616 60%)
+    fixed var(--background);
+  color: var(--foreground);
+  color-scheme: dark;
+}
+
+.brand-gradient-text {
+  background: linear-gradient(90deg, var(--brand-pink), var(--brand-purple));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes pulse-live {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.live-dot {
+  animation: pulse-live 1.6s ease-in-out infinite;
+}
