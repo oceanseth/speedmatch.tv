@@ -156,6 +156,13 @@ const CONTROL_RE =
  * should, you should wait until I answer."
  */
 function isControlUtterance(msg: string): boolean {
+  // Structural discriminator (Opus): a control phrase is the whole
+  // utterance; an answer opens with a declarative frame. "I want to slow
+  // down" is a goal, not a command — never classify framed speech as
+  // control regardless of what follows.
+  if (/^\s*(i\s+want|i\s+need|i'?m\s+looking\s+for|somewhere|a\s+|an\s+|the\s+)/i.test(msg)) {
+    return false;
+  }
   if (!CONTROL_RE.test(msg)) return false;
   const residue = msg
     .replace(new RegExp(CONTROL_RE.source, "gi"), " ")

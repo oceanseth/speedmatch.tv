@@ -103,3 +103,9 @@ test("Opus #26 fixtures: category answers, self-descriptions, and mid-sentence '
   r = await (await onboard({ answers: base, field: "lookingFor", message: "somewhere I can stop and think" })).json();
   assert.equal(r.answers.lookingFor, "somewhere I can stop and think");
 });
+
+test("declaratively framed answers are never control phrases", async () => {
+  const base = { displayName: "Seth", seeking: "products" };
+  const r = await (await onboard({ answers: base, field: "lookingFor", message: "I want to slow down" })).json();
+  assert.equal(r.answers.lookingFor, "I want to slow down");
+});
