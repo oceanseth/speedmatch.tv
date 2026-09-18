@@ -157,14 +157,43 @@ test('defaultClientKey reports degraded derivations', () => {
     }),
     (r) => reasons.push(r),
   );
-  // Healthy path must NOT report.
+  // The outage case: peer IS Cloudflare but the CF header is absent — every
+  // visitor collapses onto a handful of CF egress keys.
+  defaultClientKey(
+    new Request('http://x/', { headers: { 'x-forwarded-for': '104.18.3.81' } }),
+    (r) => reasons.push(r),
+  );
+  // Healthy paths must NOT report: CF peer + CF header, and a plain
+  // direct-origin peer with no CF header.
   defaultClientKey(
     new Request('http://x/', {
       headers: { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '104.18.3.81' },
     }),
     (r) => reasons.push(r),
   );
-  assert.deepEqual(reasons, ['no-peer', 'cf-header-non-cf-peer']);
+  defaultClientKey(
+    new Request('http://x/', { headers: { 'x-forwarded-for': '203.0.113.7' } }),
+    (r) => reasons.push(r),
+  );
+  assert.deepEqual(reasons, ['no-peer', 'cf-header-non-cf-peer', 'cf-peer-no-header']);
+});
+
+test('handler threads onDegraded through the default clientKey', async () => {
+  const reasons: string[] = [];
+  const handler = createTokenBrokerHandler({
+    authorize: async () => null,
+    onDegraded: (r) => reasons.push(r),
+  });
+  // Degraded: no XFF at all.
+  await handler(new Request('http://x/', { method: 'POST' }));
+  // Healthy: CF peer + CF header — must not report.
+  await handler(
+    new Request('http://x/', {
+      method: 'POST',
+      headers: { 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '104.18.3.81' },
+    }),
+  );
+  assert.deepEqual(reasons, ['no-peer']);
 });
 
 test('handler: unauthenticated junk cannot exhaust the mint budget', async () => {

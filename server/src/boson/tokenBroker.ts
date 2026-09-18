@@ -123,7 +123,13 @@ export interface TokenBrokerDeps {
    * Non-user-chosen rate-limit dimension for this request (client IP or
    * connection id). Default reads the first hop of x-forwarded-for.
    */
-  clientKey?: (req: Request) => string;
+  clientKey?: (req: Request, onDegraded?: (reason: DegradedKeyReason) => void) => string;
+  /**
+   * Alarm hook: fires when rate-limit key derivation degrades (see
+   * DegradedKeyReason). Wire this to metrics/paging — if it fires in
+   * production the per-IP limiter is collapsing toward a shared key.
+   */
+  onDegraded?: (reason: DegradedKeyReason) => void;
   /** Audit hook: append a TOKEN_MINTED row to session_events. */
   onMint?: (grant: MintGrant, secret: ClientSecret) => Promise<void>;
   userLimiter?: RateLimiter;
@@ -182,17 +188,24 @@ export function isCloudflareIp(ip: string): boolean {
  * the header is ignored because their peer address isn't Cloudflare's.
  */
 /**
- * Called when the key derivation degrades (empty peer, or CF header present
- * behind a non-Cloudflare peer). If this fires in production the per-IP
- * limiter is collapsing toward one shared key — alarm, don't ignore.
+ * Reasons the key derivation degrades — each means the per-IP limiter is
+ * collapsing toward one shared key. Alarm, don't ignore:
+ * - 'no-peer': edge stopped appending XFF; everything keys on 'unknown'.
+ * - 'cf-header-non-cf-peer': CF header behind a non-Cloudflare peer — either
+ *   a direct-origin spoof attempt (keyed by the attacker's real IP, fine) or
+ *   the platform inserted a hop between Cloudflare and us.
+ * - 'cf-peer-no-header': peer IS Cloudflare but CF-Connecting-IP is absent —
+ *   every visitor keys on a handful of CF egress IPs, so the per-IP mint cap
+ *   becomes a near-global cap. This is the outage case.
  * Empirically verified 2026-09-18 on InstaCloud: BOTH ingress paths (custom
  * domain and the compute edge URL) transit Cloudflare workers, client-typed
  * XFF is stripped wholesale (rightmost hop is always a CF egress IP), and
  * spoofed CF-Connecting-IP is rejected by Cloudflare with error 1000 — so
- * this should never fire until the platform changes underneath us.
+ * none of these should fire until the platform changes underneath us.
  */
-export type DegradedKeyReason = 'no-peer' | 'cf-header-non-cf-peer';
-let warnedDegraded = false;
+export type DegradedKeyReason = 'no-peer' | 'cf-header-non-cf-peer' | 'cf-peer-no-header';
+const DEGRADED_WARN_WINDOW_MS = 60_000;
+let lastDegradedWarnAt = -Infinity;
 
 export function defaultClientKey(
   req: Request,
@@ -202,12 +215,20 @@ export function defaultClientKey(
   const peer = hops.at(-1)?.trim() || '';
   const cf = req.headers.get('cf-connecting-ip');
   if (cf && peer && isCloudflareIp(peer)) return cf.trim();
-  const reason: DegradedKeyReason | null =
-    cf && peer ? 'cf-header-non-cf-peer' : !peer ? 'no-peer' : null;
+  const reason: DegradedKeyReason | null = !peer
+    ? 'no-peer'
+    : cf
+      ? 'cf-header-non-cf-peer'
+      : isCloudflareIp(peer)
+        ? 'cf-peer-no-header'
+        : null; // non-CF peer, no CF header: normal direct-origin keying
   if (reason) {
     onDegraded?.(reason);
-    if (!warnedDegraded) {
-      warnedDegraded = true;
+    // Windowed, not one-shot: a transient at boot must not permanently
+    // silence a later real degradation.
+    const now = Date.now();
+    if (now - lastDegradedWarnAt >= DEGRADED_WARN_WINDOW_MS) {
+      lastDegradedWarnAt = now;
       console.warn(
         `[tokenBroker] degraded rate-limit key (${reason}) — per-IP limiting may be collapsing to a shared key; check edge XFF behavior`,
       );
@@ -230,7 +251,7 @@ export function createTokenBrokerHandler(deps: TokenBrokerDeps) {
     // Pre-auth: cheap volume cap + per-IP limit — identity rotation can't
     // dodge these. The MINT budget deliberately runs after auth so that
     // unauthenticated junk can't exhaust it and lock real users out.
-    if (!preAuthLimiter.allow('*') || !ipLimiter.allow(clientKey(req))) {
+    if (!preAuthLimiter.allow('*') || !ipLimiter.allow(clientKey(req, deps.onDegraded))) {
       return Response.json({ error: 'rate_limited' }, { status: 429 });
     }
     const grant = await deps.authorize(req);
