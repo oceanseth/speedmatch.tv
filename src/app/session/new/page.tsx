@@ -181,6 +181,23 @@ export default function NewSession() {
 
   const answeredCount = FIELD_ORDER.filter((f) => answers[f] !== undefined).length;
 
+  const updatePreferences = async () => {
+    const signal = lifecycle.current?.signal;
+    if (busy || entering || !profile || !signal || signal.aborted) return;
+    setBusy(true); setLobbyError("");
+    try {
+      // Keep known identity/category, but recollect the matching details.
+      // The stored profile is replaced only after the new interview completes.
+      await step({ displayName: profile.displayName, seeking: profile.seeking }, null, "", signal);
+      if (!signal.aborted) {
+        answerBuffer.current.reset();
+        setProfile(null); setSaved(undefined); setInput(""); setNeedsSignin(false);
+      }
+    } catch {
+      if (!signal.aborted) setLobbyError("We couldn’t reopen your questions. Please try again.");
+    } finally { if (!signal.aborted) setBusy(false); }
+  };
+
   const enterLobby = async () => {
     const signal = lifecycle.current?.signal;
     if (busy || enteringRef.current || !profile || !signal || signal.aborted) return;
@@ -306,7 +323,7 @@ export default function NewSession() {
               {lobbyError} {needsSignin && <Link href="/login" target="_blank" rel="noopener noreferrer" className="underline">Sign in (new tab)</Link>}
             </p>}
             <p className="mt-4 text-sm text-muted">Entering the public lobby makes your tournament visible to spectators. Your raw interview stays private.</p>
-            <div className="mt-4 flex items-center gap-3">
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 disabled={busy || entering || saved === "failed"}
@@ -314,6 +331,9 @@ export default function NewSession() {
                 className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-6 py-2.5 font-semibold text-white disabled:opacity-60"
               >
                 {entering ? "Opening lobby…" : "Enter public lobby"}
+              </button>
+              <button type="button" disabled={busy || entering} onClick={() => void updatePreferences()} className="rounded-full border border-card-border px-4 py-2.5 text-sm disabled:opacity-60">
+                Update match preferences
               </button>
               <Link href="/" className="text-sm text-muted hover:text-foreground">
                 Back home
