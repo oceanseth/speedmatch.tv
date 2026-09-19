@@ -7,7 +7,7 @@ import { onboardingInstructions, type OnboardingCue } from "../lib/onboardingVoi
 type Props = {
   onTurn: (id: string, who: "host" | "you", text: string) => void;
   onActive: (active: boolean) => void;
-  onAnswer: (text: string) => void;
+  onAnswer: (text: string, questionId?: string) => "accepted" | "stale" | "ignored";
   cue: OnboardingCue | null;
 };
 const LABEL: Record<RealtimeStatus, string> = {
@@ -49,6 +49,9 @@ export default function OnboardingVoice({ onTurn, onActive, onAnswer, cue }: Pro
     const run = ++generation.current;
     setActive(true); setStatus("connecting"); setError(""); callbacks.current.onActive(true);
     let hostId = ""; let hostText = "";
+    let spokenCue = callbacks.current.cue;
+    const speechQuestions = new Map<string, string | undefined>();
+    let latestSpeechQuestion: string | undefined;
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone unavailable");
       const media = await navigator.mediaDevices.getUserMedia({
@@ -74,13 +77,32 @@ export default function OnboardingVoice({ onTurn, onActive, onAnswer, cue }: Pro
         onCaption: (delta, done) => {
           if (run !== generation.current) return;
           if (done) { hostId = ""; hostText = ""; return; }
-          if (!hostId) hostId = callbacks.current.cue?.id ?? crypto.randomUUID();
+          if (!hostId) {
+            spokenCue = callbacks.current.cue;
+            hostId = spokenCue?.id ?? crypto.randomUUID();
+          }
           hostText = (hostText + delta).slice(-2000);
           callbacks.current.onTurn(hostId, "host", hostText);
         },
-        onUserCaption: (text, done) => {
+        onUserSpeechStart: itemId => {
+          if (run !== generation.current) return;
+          latestSpeechQuestion = spokenCue?.id;
+          if (itemId) {
+            speechQuestions.set(itemId, latestSpeechQuestion);
+            if (speechQuestions.size > 256) speechQuestions.delete(speechQuestions.keys().next().value!);
+          }
+        },
+        onUserCaption: (text, done, itemId) => {
           if (run === generation.current && done && text.trim()) {
-            callbacks.current.onAnswer(text.slice(0, 2000));
+            const questionId = itemId && speechQuestions.has(itemId)
+              ? speechQuestions.get(itemId) : latestSpeechQuestion ?? callbacks.current.cue?.id;
+            if (itemId) speechQuestions.delete(itemId);
+            latestSpeechQuestion = undefined;
+            const result = callbacks.current.onAnswer(text.slice(0, 2000), questionId);
+            if (result === "stale" && callbacks.current.cue) {
+              setError("I missed part of that. Please answer the current question again.");
+              connection.speak(onboardingInstructions(callbacks.current.cue));
+            } else if (result === "accepted") setError("");
           }
         },
       });

@@ -46,6 +46,7 @@ export interface RealtimeCallbacks {
   onCaption?: (delta: string, done: boolean) => void;
   /** Transcript of what the user said (higgs-stt-3.1 input transcription). */
   onUserCaption?: (delta: string, done: boolean, itemId?: string) => void;
+  onUserSpeechStart?: (itemId?: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -415,6 +416,7 @@ export class RealtimeVoiceSession {
         }
         this.cb.onCaption?.("", true);
         this.cb.onStatus?.("listening");
+        this.cb.onUserSpeechStart?.(evt.item_id);
         break;
       case "input_audio_buffer.speech_stopped":
         // A cough can cancel the question without producing a transcript.

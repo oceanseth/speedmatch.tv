@@ -13,6 +13,7 @@ import type {
 import type { OnboardingCue } from "../../../lib/onboardingVoice";
 import { enterPublicLobby } from "../../../lib/onboardingLobby";
 import { MAX_ANSWER_CHARS } from "../../../lib/onboarding";
+import { OnboardingAnswers } from "../../../lib/onboardingAnswers";
 
 interface Turn {
   id?: string;
@@ -57,14 +58,15 @@ export default function NewSession() {
   const logRef = useRef<HTMLDivElement>(null);
   // Refs are updated before rendering so back-to-back final captions cannot
   // submit stale answers. Typed input and voice share this serialized pipeline.
-  const machine = useRef<{ answers: Partial<OnboardingProfile>; field: OnboardField | null; done: boolean }>({ answers: {}, field: null, done: false });
+  const machine = useRef<{ id: string; answers: Partial<OnboardingProfile>; field: OnboardField | null; done: boolean }>({ id: "", answers: {}, field: null, done: false });
+  const answerBuffer = useRef(new OnboardingAnswers());
   const queue = useRef<Promise<void>>(Promise.resolve());
   const pending = useRef(0);
   const lifecycle = useRef<AbortController | null>(null);
 
   const apply = useCallback((data: OnboardResponse) => {
     const id = crypto.randomUUID();
-    machine.current = { answers: data.answers, field: data.nextField, done: data.done };
+    machine.current = { id, answers: data.answers, field: data.nextField, done: data.done };
     setAnswers(data.answers);
     setField(data.nextField);
     setSuggestions(data.suggestions ?? []);
@@ -81,6 +83,7 @@ export default function NewSession() {
     answeredField: OnboardField | null,
     message: string,
     signal: AbortSignal,
+    shouldApply: () => boolean = () => true,
   ) => {
     const res = await fetch("/api/onboard", {
       method: "POST",
@@ -90,7 +93,7 @@ export default function NewSession() {
     });
     if (!res.ok) throw new Error(String(res.status));
     const data: OnboardResponse = await res.json();
-    if (!signal.aborted) apply(data);
+    if (!signal.aborted && shouldApply()) apply(data);
     return data;
   }, [apply]);
 
@@ -128,21 +131,29 @@ export default function NewSession() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
   }, [turns]);
 
-  const submitAnswer = (text: string) => {
+  const submitAnswer = (text: string, questionId?: string): "accepted" | "stale" | "ignored" => {
     const msg = text.trim().slice(0, 2000);
     const signal = lifecycle.current?.signal;
-    if (!msg || !signal || signal.aborted || machine.current.done || !machine.current.field) return;
+    if (!msg || !signal || signal.aborted || machine.current.done || !machine.current.field) return "ignored";
+    const question = { ...machine.current, field: machine.current.field };
+    if (questionId && questionId !== question.id) return "stale";
+    const ticket = answerBuffer.current.add(question, msg);
+    if (!ticket) return "ignored";
     setTurns(t => [...t, { who: "you" as const, text: msg }].slice(-100));
     setBusy(true);
     pending.current++;
     queue.current = queue.current.then(async () => {
-      if (signal.aborted || machine.current.done) return;
+      const current = () => ticket.current() && machine.current.id === question.id;
+      if (signal.aborted || machine.current.done || !current()) return;
       try {
-        await step(machine.current.answers, machine.current.field, msg, signal);
+        const request = ticket.request();
+        await step(request.answers, request.field, request.message, signal, current);
       } catch {
-        if (signal.aborted) return;
+        if (signal.aborted || !current()) return;
+        answerBuffer.current.reset();
         const reply = "Sorry — I couldn’t save that answer. Please say it again.";
         const id = crypto.randomUUID();
+        machine.current = { ...machine.current, id };
         setTurns(t => [...t, { id, who: "host" as const, text: reply }].slice(-100));
         setCue({ id, reply, nextField: machine.current.field });
       }
@@ -150,6 +161,7 @@ export default function NewSession() {
       pending.current--;
       if (!signal.aborted && pending.current === 0) setBusy(false);
     });
+    return "accepted";
   };
 
   const send = (text: string) => {
