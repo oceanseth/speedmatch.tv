@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildPitchContext,
+  buildSessionPitchContext,
   buildPublicSummary,
   parseOnboardingProfile,
   parsePublicSummary,
@@ -140,4 +141,16 @@ test('adversarial text stays in one JSON data line without template delimiter br
   const data = JSON.parse(lines[lines.indexOf('APPROVED_SEEKER_DATA_JSON:') + 1]);
   assert.equal(data.goal, stripSpeechControlTokens(goal));
   assert.ok(!context.includes('<|'));
+});
+
+
+test('session context keeps current intent authoritative and bounds reviewed history', () => {
+  const current = buildPublicSummary({ ...profile(), goal: 'a quiet place' }, ['goal']);
+  const old = buildPublicSummary({ ...profile(), goal: 'a loud party' }, ['goal']);
+  const context = buildSessionPitchContext(current, [old]);
+  assert.match(context, /current request above takes priority/);
+  assert.ok(context.indexOf('a quiet place') < context.indexOf('a loud party'));
+  assert.throws(() => buildSessionPitchContext(current, [old, old, old, old]));
+  assert.throws(() => buildSessionPitchContext(current, [{ ...old, privateEmail: 'hidden' } as typeof old]));
+  assert.equal(context.split('\n').filter(line => line === 'END_APPROVED_PAST_REQUESTS_JSON').length, 1);
 });

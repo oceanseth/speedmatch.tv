@@ -6,6 +6,7 @@ import {
   type OnboardResponse,
   type OnboardingProfile,
 } from "../../../lib/onboarding";
+import { REQUEST_ID } from "../../../lib/matchRequests";
 import type { Category } from "../../../lib/types";
 
 export const dynamic = "force-dynamic";
@@ -18,15 +19,15 @@ export const dynamic = "force-dynamic";
 const store = () => import("../../../lib/onboardingStore");
 
 /**
- * Returning users skip the interview: the saved profile for the signed-in
- * account, or null for anonymous / first-timers.
+ * Return owner-only history and reusable identity. Every new session still
+ * chooses its category and current preferences.
  */
 export async function GET(req: Request) {
   try {
-    const { loadProfile } = await store();
-    const profile = await loadProfile(req.headers);
+    const { loadRequestHistory } = await store();
+    const data = await loadRequestHistory(req.headers);
     return NextResponse.json(
-      { profile },
+      data,
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch {
@@ -39,8 +40,8 @@ export async function GET(req: Request) {
 // every user-supplied value. Swaps for the Higgs Realtime conversation
 // later without changing the page.
 const ORDER: OnboardField[] = [
-  "displayName",
   "seeking",
+  "displayName",
   "lookingFor",
   "interests",
   "funFact",
@@ -120,23 +121,32 @@ function questionFor(
       };
     case "seeking":
       return {
-        reply: `Nice to meet you, ${name}. What kind of match are we hunting for today — a person, a product, or a place?`,
+        reply: `For this session, ${name}, what kind of match are we hunting for — a person, a product, or a place?`,
         suggestions: ["People", "Products", "Places"],
       };
     case "lookingFor":
       return {
-        reply:
-          "Got it. Tell me in a sentence what you're actually looking for — the contestants will hear a summary of this, so make it count.",
+        reply: answers.seeking === "products"
+          ? "What product do you need, and what should it help you do?"
+          : answers.seeking === "places"
+            ? "What kind of place are you looking for, and for what occasion?"
+            : "What kind of person do you want to meet, and what would you like to do together?",
       };
     case "interests":
       return {
-        reply:
-          "What are two or three things you're into right now? Comma-separated is fine — this helps contestants pitch to you, not at you.",
+        reply: answers.seeking === "products"
+          ? "Which two or three features matter most for this purchase?"
+          : answers.seeking === "places"
+            ? "Which two or three things matter at this place — atmosphere, activities, or location?"
+            : "What interests or values would you like to share with this person?",
       };
     case "funFact":
       return {
-        reply:
-          "Last one: give me a fun fact about you. The good pitches will pick up on it.",
+        reply: answers.seeking === "products"
+          ? "Last detail: what budget or must-have constraint should guide this purchase? You can say no constraints."
+          : answers.seeking === "places"
+            ? "Last detail: what budget, timing, or travel limit should guide this match? You can say no constraints."
+            : "Last detail: what should this person know about you or what makes a good match?",
       };
   }
 }
@@ -276,6 +286,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "bad request" }, { status: 400 });
   }
 
+  if (body.requestId !== undefined && (typeof body.requestId !== "string" || !REQUEST_ID.test(body.requestId))) {
+    return NextResponse.json({ error: "bad_request_id" }, { status: 400 });
+  }
+
   // Re-sanitize everything the client sent; the client's copy is a
   // convenience, never a trusted value.
   const answers: Partial<OnboardingProfile> = {};
@@ -379,14 +393,16 @@ export async function POST(req: Request) {
 
   const nextField = nextMissing(answers);
   if (nextField === null) {
-    const profile = answers as OnboardingProfile;
+    // Match the canonical per-item limits before the owner reviews these values.
+    const profile = { ...answers, interests: answers.interests!.map(v => v.slice(0, 120)), funFact: answers.funFact!.slice(0, 120) } as OnboardingProfile;
+    Object.assign(answers, profile);
     // Signed-in users keep their answers (Seth's live-test finding: the
     // interview evaporated). "anonymous" and "failed" are different truths:
     // the UI says "sign in to keep this" for one and "we couldn't save
     // that, try again" for the other — never blames the signed-in user for
     // a server failure.
-    const saved = await store()
-      .then(({ saveProfile }) => saveProfile(req.headers, profile))
+    const saved = body.save === false ? undefined : await store()
+      .then(({ saveProfile }) => saveProfile(req.headers, profile, body.requestId))
       .catch((err): "failed" => {
         console.error("[onboard] profile save failed", err);
         return "failed";
@@ -398,6 +414,7 @@ export async function POST(req: Request) {
       answers,
       profile,
       saved,
+      requestId: body.requestId,
     };
     return NextResponse.json(res, { headers: { "Cache-Control": "no-store" } });
   }
