@@ -116,7 +116,7 @@ test("controlled onboarding suppresses VAD replies and only plays the current ma
   assert.equal(h.contexts[0].sources.length, 0);
   assert.ok(ws.sent.some(e => e.type === "response.cancel" && e.response_id === "automatic"));
   client.speak(onboardingInstructions({ nextField: "seeking", reply: "A person, product, or place?" }));
-  ws.receive({ type: "response.created", response: { id: "next", metadata: { app_turn: "3" } } });
+  ws.receive({ type: "response.created", response: { id: "next", metadata: { app_turn: "4" } } });
   ws.receive({ type: "response.output_audio_transcript.delta", response_id: "initial", delta: "Old question" });
   ws.receive({ type: "response.output_audio_transcript.delta", response_id: "next", delta: "A person, product, or place?" });
   ws.receive({ type: "response.output_audio.delta", response_id: "next", delta: btoa("\0\0") });
@@ -127,6 +127,103 @@ test("controlled onboarding suppresses VAD replies and only plays the current ma
   h.sockets[0].serverClose(3000); await tick();
   assert.match(JSON.stringify(h.sockets[1].sent), /interview is complete/);
   assert.match(JSON.stringify(h.sockets[1].sent), /Ready to open the bracket/);
+});
+
+test("false VAD recovers the current cue after silence, never during a long answer", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const h = harness(t); const captions: string[] = [];
+  const client = new RealtimeVoiceSession({ onCaption: (text, done) => { if (!done) captions.push(text); } });
+  t.after(() => client.close());
+  await client.connect("lobby", h.stream, { controlledResponses: true, instructions: "Current question" });
+  const ws = h.sockets[0];
+  const requests = () => ws.sent.filter(e => e.type === "response.create");
+  ws.receive({ type: "input_audio_buffer.speech_started", item_id: "noise" });
+  ws.receive({ type: "response.created", response: { id: "swallowed", metadata: { app_turn: "1" } } });
+  t.mock.timers.tick(30_000);
+  assert.equal(requests().length, 1, "must not interrupt ongoing speech");
+  ws.receive({ type: "input_audio_buffer.speech_stopped", item_id: "noise" });
+  ws.receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "noise", transcript: " " });
+  t.mock.timers.tick(4_999);
+  assert.equal(requests().length, 1);
+  t.mock.timers.tick(1);
+  assert.equal(requests().length, 2);
+  assert.equal((requests()[1].response as { instructions: string }).instructions, "Current question");
+  ws.receive({ type: "response.created", response: { id: "recovered", metadata: { app_turn: "3" } } });
+  ws.receive({ type: "response.output_audio_transcript.delta", response_id: "swallowed", delta: "Stale" });
+  ws.receive({ type: "response.output_audio_transcript.delta", response_id: "recovered", delta: "Current question" });
+  t.mock.timers.tick(30_000);
+  assert.equal(requests().length, 2, "accepted recovery cancels watchdog");
+  assert.deepEqual(captions, ["Current question"]);
+});
+
+test("a final answer cancels recovery while extraction owns the next cue", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const h = harness(t); const answers: string[] = [];
+  const client = new RealtimeVoiceSession({ onUserCaption: (text, done) => { if (done) answers.push(text); } });
+  t.after(() => client.close());
+  await client.connect("lobby", h.stream, { controlledResponses: true, instructions: "Old question" });
+  const ws = h.sockets[0];
+  ws.receive({ type: "input_audio_buffer.speech_started", item_id: "answer" });
+  ws.receive({ type: "input_audio_buffer.speech_stopped", item_id: "answer" });
+  t.mock.timers.tick(5_000);
+  ws.receive({ type: "conversation.item.input_audio_transcription.completed", item_id: "answer", transcript: "Alex" });
+  ws.receive({ type: "response.created", response: { id: "late-recovery", metadata: { app_turn: "3" } } });
+  assert.ok(ws.sent.some(e => e.type === "response.cancel" && e.response_id === "late-recovery"));
+  t.mock.timers.tick(30_000);
+  assert.equal(ws.sent.filter(e => e.type === "response.create").length, 2);
+  assert.deepEqual(answers, ["Alex"]);
+  client.speak("Next question");
+  t.mock.timers.tick(5_000);
+  assert.equal((ws.sent.filter(e => e.type === "response.create").at(-1)!.response as { instructions: string }).instructions, "Next question");
+  client.close();
+  const sent = ws.sent.length;
+  t.mock.timers.tick(30_000);
+  assert.equal(ws.sent.length, sent, "Stop cancels recovery");
+});
+
+test("missing created events get bounded recovery and a visible reconnect error", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const h = harness(t); const errors: string[] = [];
+  const client = new RealtimeVoiceSession({ onError: message => errors.push(message) });
+  t.after(() => client.close());
+  await client.connect("lobby", h.stream, { controlledResponses: true, instructions: "Current question" });
+  for (let i = 0; i < 4; i++) t.mock.timers.tick(5_000);
+  assert.equal(h.sockets[0].sent.filter(e => e.type === "response.create").length, 3);
+  assert.equal(errors.length, 1);
+  assert.equal(h.contexts[0].state, "closed");
+});
+
+test("reconnect discards the old watchdog and resumes the latest cue", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const h = harness(t); const client = new RealtimeVoiceSession();
+  t.after(() => client.close());
+  await client.connect("lobby", h.stream, { controlledResponses: true, instructions: "First question" });
+  t.mock.timers.tick(4_000);
+  client.speak("Latest question");
+  h.sockets[0].serverClose(3000);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(h.sockets.length, 2);
+  const ws = h.sockets[1];
+  const request = ws.sent.find(e => e.type === "response.create")!;
+  assert.equal((request.response as { instructions: string }).instructions, "Latest question");
+  const metadata = (request.response as { metadata: object }).metadata;
+  ws.receive({ type: "response.created", response: { id: "reconnected", metadata } });
+  t.mock.timers.tick(30_000);
+  assert.equal(ws.sent.filter(e => e.type === "response.create").length, 1);
+  assert.equal(h.sockets[0].sent.filter(e => e.type === "response.create").length, 2);
+});
+
+test("transcript deduplication retains a bounded window of recent item IDs", async t => {
+  const h = harness(t); const answers: string[] = [];
+  const client = new RealtimeVoiceSession({ onUserCaption: (text, done) => { if (done) answers.push(text); } });
+  t.after(() => client.close());
+  await client.connect("lobby", h.stream);
+  const emit = (id: number) => h.sockets[0].receive({ type: "conversation.item.input_audio_transcription.completed", item_id: String(id), transcript: String(id) });
+  for (let i = 0; i < 300; i++) emit(i);
+  emit(299);
+  assert.equal(answers.length, 300, "recent duplicate suppressed");
+  emit(0);
+  assert.equal(answers.length, 301, "old IDs evicted");
 });
 
 test("actual broker response reaches Boson framing, mic PCM and spoken audio/captions", async t => {
