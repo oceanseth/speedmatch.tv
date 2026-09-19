@@ -408,7 +408,7 @@ export async function POST(req: Request) {
         return "failed";
       });
     const res: OnboardResponse = {
-      reply: `Perfect, ${profile.displayName} — I've got what I need. I'll brief the contestants with a summary (never your exact words). Ready to open the bracket?`,
+      reply: `Perfect, ${profile.displayName} — I've got what I need. Review the details below and choose what contestants may use. Ready to open the bracket?`,
       nextField: null,
       done: true,
       answers,

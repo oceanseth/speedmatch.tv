@@ -151,6 +151,7 @@ test('session context keeps current intent authoritative and bounds reviewed his
   assert.match(context, /current request above takes priority/);
   assert.ok(context.indexOf('a quiet place') < context.indexOf('a loud party'));
   assert.throws(() => buildSessionPitchContext(current, [old, old, old, old]));
+  assert.throws(() => buildSessionPitchContext(current, new Array(1)));
   assert.throws(() => buildSessionPitchContext(current, [{ ...old, privateEmail: 'hidden' } as typeof old]));
   assert.equal(context.split('\n').filter(line => line === 'END_APPROVED_PAST_REQUESTS_JSON').length, 1);
 });

@@ -145,7 +145,7 @@ export function buildPitchContext(value: PublicSummary): string {
  * never a substitute for what the seeker requested for this tournament. */
 export function buildSessionPitchContext(current: PublicSummary, history: readonly PublicSummary[] = []): string {
   if (!Array.isArray(history) || history.length > 3) throw new ProfileValidationError('history');
-  const previous = history.map(parsePublicSummary);
+  const previous = Array.from(history, parsePublicSummary);
   return [
     buildPitchContext(current),
     'The current request above takes priority over every previous request below.',
