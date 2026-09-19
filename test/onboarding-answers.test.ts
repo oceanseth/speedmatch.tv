@@ -44,6 +44,7 @@ test("a single question cannot accumulate an unbounded transcript", () => {
   const buffer = new OnboardingAnswers();
   assert.equal(buffer.add(question, "..."), null);
   const first = buffer.add(question, "x".repeat(1999))!;
+  assert.equal(buffer.add(question, "y"), null);
   assert.equal(buffer.add(question, "another fragment"), null);
   assert.equal(first.current(), true);
   assert.ok(first.request().message.length <= 2000);

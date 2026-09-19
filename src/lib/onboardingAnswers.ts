@@ -22,7 +22,7 @@ export class OnboardingAnswers {
     const batch = this.batch;
     if (batch.seen.has(key)) return null;
     // Bound one question as well as the overall request body.
-    if (batch.parts.join(" ").length + message.length > 2000) return null;
+    if (batch.parts.join(" ").length + (batch.parts.length ? 1 : 0) + message.length > 2000) return null;
     batch.parts.push(message);
     batch.seen.add(key);
     const revision = ++batch.revision;
