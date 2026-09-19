@@ -130,3 +130,54 @@ export function buildSpeechRequest(opts: {
     voice: opts.voice,
   };
 }
+
+export interface SynthesizeOptions {
+  apiKey?: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}
+
+export interface SynthesizedAudio {
+  audio: ArrayBuffer;
+  contentType: string;
+}
+
+const TTS_URL = 'https://api.boson.ai/v1/audio/speech';
+
+/**
+ * Execute a built speech request against POST /v1/audio/speech. Taking a
+ * `SpeechRequestBody` (not raw strings) keeps `buildSpeechRequest` the only
+ * door: input is brand-sanitized and length-capped, voice is validated.
+ */
+export async function synthesizeSpeech(
+  body: SpeechRequestBody,
+  opts: SynthesizeOptions = {},
+): Promise<SynthesizedAudio> {
+  const apiKey = opts.apiKey ?? process.env.BOSON_API_KEY;
+  if (!apiKey) throw new Error('BOSON_API_KEY is not set (bind it via `insta secrets set`)');
+  const doFetch = opts.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 30_000);
+  try {
+    const res = await doFetch(TTS_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      // Deliberately not echoing the response body (same rule as the token
+      // broker): upstream errors can quote request headers.
+      throw new Error(`Boson speech synthesis failed: HTTP ${res.status}`);
+    }
+    return {
+      audio: await res.arrayBuffer(),
+      contentType: res.headers.get('content-type') ?? 'audio/mpeg',
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}

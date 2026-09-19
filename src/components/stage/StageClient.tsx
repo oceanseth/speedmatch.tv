@@ -81,7 +81,15 @@ export default function StageClient({ category, tournamentId = null }: { categor
   const [tState, setTState] = useState<TournamentStateSnapshot | null>(null);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [personas, setPersonas] = useState<Record<string, PersonaCard>>({});
-  const [pitchLine, setPitchLine] = useState<string | null>(null);
+  const [pitchCue, setPitchCue] = useState<
+    { side: "A" | "B"; personaId: string; line: string } | null
+  >(null);
+  const pitchLine = pitchCue?.line ?? null;
+  /** Autoplay was refused before any user gesture — show the enable button. */
+  const [voicesBlocked, setVoicesBlocked] = useState(false);
+  const pitchAudioRef = useRef<HTMLAudioElement | null>(null);
+  const pitchAudioUrlRef = useRef<string | null>(null);
+  const lastPitchLegRef = useRef<string | null>(null);
   const [startPending, setStartPending] = useState(false);
   const [startNotice, setStartNotice] = useState<string | null>(null);
   /** Set by the events-poll effect; lets chat/decide refresh immediately. */
@@ -158,12 +166,83 @@ export default function StageClient({ category, tournamentId = null }: { categor
     setTState(null);
     setEvents([]);
     setPersonas({});
-    setPitchLine(null);
+    setPitchCue(null);
     setStartNotice(null);
     setManifest([]);
     setUploadedVideo(false);
     setDeletePending(false);
   }
+
+  const stopPitchAudio = useCallback(() => {
+    pitchAudioRef.current?.pause();
+    if (pitchAudioUrlRef.current) {
+      URL.revokeObjectURL(pitchAudioUrlRef.current);
+      pitchAudioUrlRef.current = null;
+    }
+  }, []);
+
+  // Voice: each new pitch leg fetches its synthesized 15-second clip and
+  // plays it. The leg key (not the cue object) gates replays, so the 2s
+  // poll re-delivering the same cue never restarts audio. Autoplay refusal
+  // (spectator with no gesture yet) surfaces the enable button; the clip
+  // stays loaded so the button can start it mid-leg.
+  useEffect(() => {
+    const id = focusedTournamentId;
+    const phase = tState?.phase;
+    const cur = tState?.current;
+    if (
+      !id ||
+      !pitchCue ||
+      !cur ||
+      (phase !== "PITCH_A" && phase !== "PITCH_B")
+    )
+      return;
+    const leg = `${cur.round}-${cur.index}-${pitchCue.side}`;
+    if (lastPitchLegRef.current === leg) return;
+    lastPitchLegRef.current = leg;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/tournaments/${id}/pitch-audio?leg=${leg}`,
+        );
+        if (!res.ok || cancelled) return;
+        const blob = await res.blob();
+        if (cancelled) return;
+        stopPitchAudio();
+        const url = URL.createObjectURL(blob);
+        pitchAudioUrlRef.current = url;
+        const el = pitchAudioRef.current ?? new Audio();
+        pitchAudioRef.current = el;
+        el.src = url;
+        try {
+          await el.play();
+          setVoicesBlocked(false);
+        } catch {
+          setVoicesBlocked(true);
+        }
+      } catch {
+        // Synthesis unavailable: the caption still carries the pitch.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [focusedTournamentId, pitchCue, tState, stopPitchAudio]);
+
+  // New focus (or unmount): silence any clip from the previous show.
+  useEffect(
+    () => () => {
+      lastPitchLegRef.current = null;
+      stopPitchAudio();
+    },
+    [focusedTournamentId, stopPitchAudio],
+  );
+
+  const enablePitchVoices = () => {
+    setVoicesBlocked(false);
+    void pitchAudioRef.current?.play().catch(() => setVoicesBlocked(true));
+  };
 
   // Load upload memory per focused tournament; deferred (like the stored
   // name) so hydration completes before localStorage-driven UI lands.
@@ -185,7 +264,7 @@ export default function StageClient({ category, tournamentId = null }: { categor
       const res = await fetchEvents(id, lastSeq);
       if (cancelled || !res.ok) return;
       setTState(res.data.state);
-      setPitchLine(res.data.pitch?.line ?? null);
+      setPitchCue(res.data.pitch ?? null);
       if (res.data.personas) {
         setPersonas((prev) => ({ ...prev, ...res.data.personas }));
       }
@@ -411,6 +490,15 @@ export default function StageClient({ category, tournamentId = null }: { categor
     <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6">
       <div className={`grid gap-4 ${tournamentId ? "" : "lg:grid-cols-[minmax(0,1fr)_300px]"}`}>
         <div className="flex min-w-0 flex-col gap-4">
+          {voicesBlocked && (
+            <button
+              type="button"
+              onClick={enablePitchVoices}
+              className="self-start rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-4 py-1.5 text-sm font-semibold text-white shadow-lg transition hover:opacity-90"
+            >
+              🔊 Tap to hear the pitches
+            </button>
+          )}
           <StageSurface
             waitingForTournament={!!tournamentId}
             slot={focusedSlot}
