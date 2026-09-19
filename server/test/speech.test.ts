@@ -6,6 +6,7 @@ import {
   speechLineClamped,
   buildSpeechRequest,
   trustedSpeechLiteral,
+  synthesizeSpeech,
   SPEECH_INPUT_MAX,
 } from '../src/boson/speech.ts';
 
@@ -80,5 +81,42 @@ test('buildSpeechRequest validates voice against presets and registered ids', ()
   }
   for (const bad of ['', 'Jake', 'voice_', 'voice_a b', 'jake; drop', '<|sfx:boo|>']) {
     assert.throws(() => buildSpeechRequest({ input, voice: bad }), RangeError, bad);
+  }
+});
+
+test('synthesizeSpeech posts the built body with auth and returns the audio', async () => {
+  const audio = new Uint8Array([1, 2, 3]).buffer;
+  let seen: { url: string; init: RequestInit } | null = null;
+  const fetchImpl = (async (url: unknown, init: unknown) => {
+    seen = { url: String(url), init: init as RequestInit };
+    return new Response(audio, { status: 200, headers: { 'content-type': 'audio/mpeg' } });
+  }) as typeof fetch;
+  const body = buildSpeechRequest({ input: trustedSpeechLiteral('hi'), voice: 'jake' });
+  const out = await synthesizeSpeech(body, { apiKey: 'k', fetchImpl });
+  assert.equal(out.contentType, 'audio/mpeg');
+  assert.equal(new Uint8Array(out.audio).length, 3);
+  assert.equal(seen!.url, 'https://api.boson.ai/v1/audio/speech');
+  assert.equal((seen!.init.headers as Record<string, string>).Authorization, 'Bearer k');
+  assert.deepEqual(JSON.parse(String(seen!.init.body)), body);
+});
+
+test('synthesizeSpeech surfaces only the status on upstream failure — never the body', async () => {
+  const fetchImpl = (async () =>
+    new Response('secret upstream detail', { status: 401 })) as typeof fetch;
+  const body = buildSpeechRequest({ input: trustedSpeechLiteral('hi'), voice: 'jake' });
+  await assert.rejects(
+    synthesizeSpeech(body, { apiKey: 'k', fetchImpl }),
+    (err: Error) => /HTTP 401/.test(err.message) && !/secret/.test(err.message),
+  );
+});
+
+test('synthesizeSpeech refuses to run without an API key', async () => {
+  const body = buildSpeechRequest({ input: trustedSpeechLiteral('hi'), voice: 'jake' });
+  const prev = process.env.BOSON_API_KEY;
+  delete process.env.BOSON_API_KEY;
+  try {
+    await assert.rejects(synthesizeSpeech(body, { fetchImpl: (async () => new Response()) as typeof fetch }), /BOSON_API_KEY/);
+  } finally {
+    if (prev !== undefined) process.env.BOSON_API_KEY = prev;
   }
 });
