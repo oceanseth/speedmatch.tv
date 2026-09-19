@@ -13,6 +13,8 @@ import type {
 import type { OnboardingCue } from "../../../lib/onboardingVoice";
 import { enterPublicLobby } from "../../../lib/onboardingLobby";
 import { MAX_ANSWER_CHARS } from "../../../lib/onboarding";
+import { MAX_PITCH_HISTORY, type MatchRequest } from "../../../lib/matchRequests";
+import { OnboardingAnswers } from "../../../lib/onboardingAnswers";
 
 interface Turn {
   id?: string;
@@ -25,12 +27,12 @@ const FIELD_LABELS: Record<OnboardField, string> = {
   seeking: "category",
   lookingFor: "what you want",
   interests: "interests",
-  funFact: "fun fact",
+  funFact: "final detail",
 };
 
 const FIELD_ORDER: OnboardField[] = [
-  "displayName",
   "seeking",
+  "displayName",
   "lookingFor",
   "interests",
   "funFact",
@@ -38,6 +40,11 @@ const FIELD_ORDER: OnboardField[] = [
 
 export default function NewSession() {
   const router = useRouter();
+  const requestId = useRef<string>("");
+  const [completedId, setCompletedId] = useState<string | null>(null);
+  const [history, setHistory] = useState<MatchRequest[]>([]);
+  const [historyIds, setHistoryIds] = useState<string[]>([]);
+  const [approveSummary, setApproveSummary] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [answers, setAnswers] = useState<Partial<OnboardingProfile>>({});
   const [field, setField] = useState<OnboardField | null>(null);
@@ -57,14 +64,15 @@ export default function NewSession() {
   const logRef = useRef<HTMLDivElement>(null);
   // Refs are updated before rendering so back-to-back final captions cannot
   // submit stale answers. Typed input and voice share this serialized pipeline.
-  const machine = useRef<{ answers: Partial<OnboardingProfile>; field: OnboardField | null; done: boolean }>({ answers: {}, field: null, done: false });
+  const machine = useRef<{ id: string; answers: Partial<OnboardingProfile>; field: OnboardField | null; done: boolean }>({ id: "", answers: {}, field: null, done: false });
+  const answerBuffer = useRef(new OnboardingAnswers());
   const queue = useRef<Promise<void>>(Promise.resolve());
   const pending = useRef(0);
   const lifecycle = useRef<AbortController | null>(null);
 
   const apply = useCallback((data: OnboardResponse) => {
     const id = crypto.randomUUID();
-    machine.current = { answers: data.answers, field: data.nextField, done: data.done };
+    machine.current = { id, answers: data.answers, field: data.nextField, done: data.done };
     setAnswers(data.answers);
     setField(data.nextField);
     setSuggestions(data.suggestions ?? []);
@@ -72,7 +80,13 @@ export default function NewSession() {
     setTurns(t => [...t, { id, who: "host" as const, text: data.reply }].slice(-100));
     if (data.done && data.profile) {
       setProfile(data.profile);
+      setCompletedId(data.requestId ?? null);
       setSaved(data.saved);
+      setApproveSummary(false);
+      if (data.saved === "saved" && data.requestId) {
+        const entry = { id: data.requestId, createdAt: new Date().toISOString(), profile: data.profile };
+        setHistory(previous => [entry, ...previous.filter(item => item.id !== entry.id)].slice(0, 20));
+      }
     }
   }, []);
 
@@ -81,22 +95,47 @@ export default function NewSession() {
     answeredField: OnboardField | null,
     message: string,
     signal: AbortSignal,
+    shouldApply: () => boolean = () => true,
   ) => {
     const res = await fetch("/api/onboard", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ answers: current, field: answeredField, message }),
+      body: JSON.stringify({ answers: current, field: answeredField, message, requestId: requestId.current, save: answeredField === null }),
       signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
     });
     if (!res.ok) throw new Error(String(res.status));
     const data: OnboardResponse = await res.json();
-    if (!signal.aborted) apply(data);
+    if (signal.aborted || !shouldApply()) return data;
+    apply(data);
+    if (data.done && data.profile && answeredField !== null) {
+      // Accept the final answer before committing. Superseded extraction
+      // requests never write history; late captions cannot mutate this record.
+      const id = requestId.current;
+      let result: OnboardResponse["saved"] = "failed";
+      try {
+        const commit = await fetch("/api/onboard", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId: id, answers: data.answers, field: null, message: "" }),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+        });
+        if (commit.ok) result = ((await commit.json()) as OnboardResponse).saved;
+      } catch { /* Completion stays visible with a retryable save failure. */ }
+      if (!signal.aborted) {
+        setSaved(result);
+        if (result === "saved") {
+          const entry = { id, createdAt: new Date().toISOString(), profile: data.profile };
+          setHistory(previous => [entry, ...previous.filter(item => item.id !== id)].slice(0, 20));
+        }
+      }
+      return { ...data, saved: result };
+    }
     return data;
   }, [apply]);
 
   useEffect(() => {
     const controller = new AbortController();
     lifecycle.current = controller;
+    requestId.current = crypto.randomUUID();
     const { signal } = controller;
     void (async () => {
       try {
@@ -104,16 +143,11 @@ export default function NewSession() {
           cache: "no-store", signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
         });
         if (!res.ok) throw new Error(String(res.status));
-        const data: { profile: OnboardingProfile | null } = await res.json();
+        const data: { displayName: string | null; history: MatchRequest[] } = await res.json();
         if (signal.aborted) return;
-        if (data.profile) {
-          apply({
-            answers: data.profile, profile: data.profile, nextField: null, done: true, saved: "saved",
-            reply: `Welcome back, ${data.profile.displayName}! Your match profile is saved. Ready to open the bracket?`,
-          });
-        } else {
-          await step({}, null, "", signal);
-        }
+        setHistory(data.history ?? []);
+        // Identity is reusable; current intent is always a fresh choice.
+        await step(data.displayName ? { displayName: data.displayName } : {}, null, "", signal);
       } catch {
         // A failed lookup must not masquerade as a new guest and re-interview them.
         if (!signal.aborted) setLoadError(true);
@@ -128,21 +162,29 @@ export default function NewSession() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
   }, [turns]);
 
-  const submitAnswer = (text: string) => {
+  const submitAnswer = (text: string, questionId?: string): "accepted" | "stale" | "ignored" => {
     const msg = text.trim().slice(0, 2000);
     const signal = lifecycle.current?.signal;
-    if (!msg || !signal || signal.aborted || machine.current.done || !machine.current.field) return;
+    if (!msg || !signal || signal.aborted || machine.current.done || !machine.current.field) return "ignored";
+    const question = { ...machine.current, field: machine.current.field };
+    if (questionId && questionId !== question.id) return "stale";
+    const ticket = answerBuffer.current.add(question, msg);
+    if (!ticket) return "ignored";
     setTurns(t => [...t, { who: "you" as const, text: msg }].slice(-100));
     setBusy(true);
     pending.current++;
     queue.current = queue.current.then(async () => {
-      if (signal.aborted || machine.current.done) return;
+      const current = () => ticket.current() && machine.current.id === question.id;
+      if (signal.aborted || machine.current.done || !current()) return;
       try {
-        await step(machine.current.answers, machine.current.field, msg, signal);
+        const request = ticket.request();
+        await step(request.answers, request.field, request.message, signal, current);
       } catch {
-        if (signal.aborted) return;
+        if (signal.aborted || !current()) return;
+        answerBuffer.current.reset();
         const reply = "Sorry — I couldn’t save that answer. Please say it again.";
         const id = crypto.randomUUID();
+        machine.current = { ...machine.current, id };
         setTurns(t => [...t, { id, who: "host" as const, text: reply }].slice(-100));
         setCue({ id, reply, nextField: machine.current.field });
       }
@@ -150,6 +192,7 @@ export default function NewSession() {
       pending.current--;
       if (!signal.aborted && pending.current === 0) setBusy(false);
     });
+    return "accepted";
   };
 
   const send = (text: string) => {
@@ -169,9 +212,28 @@ export default function NewSession() {
 
   const answeredCount = FIELD_ORDER.filter((f) => answers[f] !== undefined).length;
 
+  const newSession = async () => {
+    const signal = lifecycle.current?.signal;
+    if (busy || entering || !profile || !signal || signal.aborted) return;
+    setBusy(true); setLobbyError("");
+    const previousId = requestId.current;
+    try {
+      requestId.current = crypto.randomUUID();
+      await step({ displayName: profile.displayName }, null, "", signal);
+      if (!signal.aborted) {
+        answerBuffer.current.reset();
+        setProfile(null); setCompletedId(null); setSaved(undefined); setInput(""); setNeedsSignin(false);
+        setHistoryIds([]); setApproveSummary(false);
+      }
+    } catch {
+      requestId.current = previousId;
+      if (!signal.aborted) setLobbyError("We couldn’t start a new session. Please try again.");
+    } finally { if (!signal.aborted) setBusy(false); }
+  };
+
   const enterLobby = async () => {
     const signal = lifecycle.current?.signal;
-    if (busy || enteringRef.current || !profile || !signal || signal.aborted) return;
+    if (busy || enteringRef.current || !profile || !approveSummary || !signal || signal.aborted) return;
     enteringRef.current = true;
     setEntering(true); setLobbyError(""); setNeedsSignin(false);
     try {
@@ -182,7 +244,7 @@ export default function NewSession() {
         if (completion.saved === "failed") throw new Error("save failed");
       }
       if (signal.aborted) return;
-      const result = await enterPublicLobby(profile.seeking);
+      const result = await enterPublicLobby(profile.seeking, { requestId: requestId.current, historyIds, approveSummary: true });
       if (signal.aborted) return;
       if (result.status === "ready") router.push(result.href);
       else if (result.status === "signin") {
@@ -201,6 +263,10 @@ export default function NewSession() {
     <>
       <Header />
       <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-8">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-muted">A fresh match request for this session. Completed requests stay in your history.</p>
+          <button type="button" onClick={() => window.location.reload()} className="rounded-full border border-card-border px-4 py-2 text-sm">Refresh / restart</button>
+        </div>
         <OnboardingVoice cue={cue} onAnswer={submitAnswer} onActive={setVoiceActive} onTurn={(id, who, text) => {
           setTurns(previous => {
             const index = previous.findIndex(turn => turn.id === id);
@@ -262,7 +328,7 @@ export default function NewSession() {
         {profile ? (
           <div className="mt-4 rounded-xl border border-card-border bg-card p-5">
             <div className="mb-3 text-sm font-semibold">
-              Your match profile — <span className="brand-gradient-text">{profile.displayName}</span>
+              This session’s match request — <span className="brand-gradient-text">{profile.displayName}</span>
             </div>
             <dl className="grid gap-2 text-sm text-muted sm:grid-cols-2">
               <div>
@@ -274,15 +340,16 @@ export default function NewSession() {
                 <dd>{profile.lookingFor}</dd>
               </div>
               <div>
-                <dt className="font-medium text-foreground">Into</dt>
+                <dt className="font-medium text-foreground">{profile.seeking === "products" ? "Features" : profile.seeking === "places" ? "Priorities" : "Interests"}</dt>
                 <dd>{profile.interests.join(", ")}</dd>
               </div>
               <div>
-                <dt className="font-medium text-foreground">Fun fact</dt>
+                <dt className="font-medium text-foreground">{profile.seeking === "people" ? "About you" : "Budget and constraints"}</dt>
                 <dd>{profile.funFact}</dd>
               </div>
             </dl>
-            {saved === "saved" && <p role="status" className="mt-4 text-sm text-muted">Saved to your account.</p>}
+            {saved === undefined && <p role="status" className="mt-4 text-sm text-muted">Saving this request…</p>}
+            {saved === "saved" && <p role="status" className="mt-4 text-sm text-muted">Saved in your request history.</p>}
             {saved === "failed" && <p role="alert" className="mt-4 text-sm text-brand-pink">
               Your answers are complete, but saving failed. Keep this page open and
               <button type="button" disabled={busy || entering} onClick={() => void retrySave()} className="ml-1 underline disabled:opacity-50">Retry saving</button>.
@@ -293,15 +360,22 @@ export default function NewSession() {
             {lobbyError && <p role="alert" className="mt-4 text-sm text-brand-pink">
               {lobbyError} {needsSignin && <Link href="/login" target="_blank" rel="noopener noreferrer" className="underline">Sign in (new tab)</Link>}
             </p>}
-            <p className="mt-4 text-sm text-muted">Entering the public lobby makes your tournament visible to spectators. Your raw interview stays private.</p>
-            <div className="mt-4 flex items-center gap-3">
+            <label className="mt-4 flex items-start gap-2 text-sm text-muted">
+              <input type="checkbox" checked={approveSummary} disabled={busy || entering} onChange={e => setApproveSummary(e.target.checked)} />
+              Let contestants use the category and preferences shown above in their pitches. These details may be spoken to spectators. My name and raw interview are not included.
+            </label>
+            <p className="mt-4 text-sm text-muted">Entering the public lobby makes your tournament visible to spectators. If you already have an active tournament, this resumes it with its original request. Your new request remains saved for later.</p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                disabled={busy || entering || saved === "failed"}
+                disabled={busy || entering || saved === "failed" || !approveSummary}
                 onClick={() => void enterLobby()}
                 className="rounded-full bg-gradient-to-r from-brand-pink to-brand-purple px-6 py-2.5 font-semibold text-white disabled:opacity-60"
               >
                 {entering ? "Opening lobby…" : "Enter public lobby"}
+              </button>
+              <button type="button" disabled={busy || entering} onClick={() => void newSession()} className="rounded-full border border-card-border px-4 py-2.5 text-sm disabled:opacity-60">
+                Start another session
               </button>
               <Link href="/" className="text-sm text-muted hover:text-foreground">
                 Back home
@@ -353,6 +427,22 @@ export default function NewSession() {
             </form>
           </div>
         )}
+        {history.length > 0 && <section className="mt-6 rounded-xl border border-card-border p-4" aria-label="Past matching requests">
+          <h2 className="font-semibold">Past matching requests</h2>
+          <p className="mt-2 text-sm text-muted">Your history stays in your account. Select up to {MAX_PITCH_HISTORY} past requests to help contestants tailor this session’s pitches. Selected details may be spoken to spectators; this session’s preferences take priority.</p>
+          <p className="mt-1 text-xs text-muted">Showing up to 20 recent requests.</p>
+          {history.filter(item => item.id !== completedId).map(item => <details key={item.id} className="mt-3 rounded-lg border border-card-border p-3">
+            <summary className="cursor-pointer text-sm"><span className="capitalize">{item.profile.seeking}</span> · {item.profile.lookingFor} <span className="text-muted">({new Date(item.createdAt).toLocaleDateString()})</span></summary>
+            <dl className="mt-2 text-sm text-muted">
+              <dt>Interests / priorities</dt><dd>{item.profile.interests.join(", ")}</dd>
+              <dt>Final detail</dt><dd>{item.profile.funFact}</dd>
+            </dl>
+            <label className="mt-3 flex items-start gap-2 text-sm">
+              <input type="checkbox" checked={historyIds.includes(item.id)} disabled={busy || entering || (!historyIds.includes(item.id) && historyIds.length >= MAX_PITCH_HISTORY)} onChange={e => setHistoryIds(ids => e.target.checked ? [...ids, item.id] : ids.filter(id => id !== item.id))} />
+              Let contestants use these past preferences in this session
+            </label>
+          </details>)}
+        </section>}
       </main>
     </>
   );

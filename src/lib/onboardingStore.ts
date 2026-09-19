@@ -1,7 +1,6 @@
 import "server-only";
 import {
   parseOnboardingProfile,
-  buildPublicSummary,
 } from "@speedmatch/server/onboarding";
 import { query } from "./db";
 import { getAppUser } from "./identity";
@@ -17,9 +16,9 @@ import type { Category } from "./types";
  * lookingFor→goal, funFact→preferences[0]. displayName is NOT stored here —
  * it lives on the account (users.display_name, already sanitized).
  *
- * The interview therefore only overwrites the fields it owns: on re-save,
- * existing dealbreakers and preferences beyond slot 0 (the orchestrator's
- * future territory) are preserved, not clobbered.
+ * Each new request is an immutable canonical snapshot. Account defaults retain
+ * the latest completed request; history retains previous preferences, including
+ * orchestrator-owned fields. A fresh request does not inherit old constraints.
  */
 
 // The canonical contract caps interests/preferences ITEMS at 120 chars while
@@ -73,47 +72,13 @@ export type SaveResult = "saved" | "anonymous";
 export async function saveProfile(
   headers: Headers,
   profile: AppProfile,
+  requestId?: string,
 ): Promise<SaveResult> {
   const user = await getAppUser(headers);
   if (!user) return "anonymous";
-  let canonical = toCanonicalProfile(profile);
-
-  // Preserve orchestrator-owned fields on re-save (see ruling above).
-  const existing = await query<{ profile: unknown }>(
-    `SELECT profile FROM onboarding_profiles WHERE user_id = $1`,
-    [user.id],
-  );
-  if (existing.length > 0) {
-    try {
-      const prev = parseOnboardingProfile(existing[0].profile);
-      // Clamp the merge to the canonical max (8): keep the user's fresh
-      // answer (slot 0) and the NEWEST orchestrator entries, dropping the
-      // oldest — a full profile must never turn a legitimate re-interview
-      // into a "failed" save.
-      const keep = 8 - canonical.preferences.length;
-      canonical = parseOnboardingProfile({
-        ...canonical,
-        preferences: [
-          ...canonical.preferences,
-          ...prev.preferences.slice(1).slice(-keep),
-        ],
-        dealbreakers: prev.dealbreakers,
-      });
-    } catch {
-      // Unreadable stored profile: the fresh interview simply replaces it.
-    }
-  }
-
-  const summary = buildPublicSummary(canonical, []);
-  await query(
-    `INSERT INTO onboarding_profiles (user_id, profile, public_summary, updated_at)
-     VALUES ($1, $2::jsonb, $3::jsonb, now())
-     ON CONFLICT (user_id) DO UPDATE
-       SET profile = EXCLUDED.profile,
-           public_summary = EXCLUDED.public_summary,
-           updated_at = now()`,
-    [user.id, JSON.stringify(canonical), JSON.stringify(summary)],
-  );
+  const canonical = toCanonicalProfile(profile);
+  const { persistMatchRequest } = await import("./matchRequestStore");
+  await persistMatchRequest(user.id, requestId ?? crypto.randomUUID(), canonical);
   return "saved";
 }
 
@@ -126,4 +91,19 @@ export async function loadProfile(headers: Headers): Promise<AppProfile | null> 
   );
   if (rows.length === 0) return null;
   return toAppProfile(rows[0].profile, user.displayName);
+}
+
+/** Private account history for review. Nothing here is a public feed. */
+export async function loadRequestHistory(headers: Headers) {
+  const user = await getAppUser(headers);
+  if (!user) return { displayName: null, history: [] };
+  const { requestHistory } = await import("./matchRequestStore");
+  const rows = await requestHistory(user.id);
+  return {
+    displayName: user.displayName,
+    history: rows.flatMap(row => {
+      const profile = toAppProfile(row.profile, user.displayName);
+      return profile ? [{ id: row.id, createdAt: new Date(row.created_at).toISOString(), profile }] : [];
+    }),
+  };
 }

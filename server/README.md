@@ -130,3 +130,40 @@ npm ci
 npm test --workspace @speedmatch/server
 npm run typecheck --workspace @speedmatch/server
 ```
+
+
+## Per-session matching requests (migration 008)
+
+`/session/new` always asks person/product/place. Only account identity is reused;
+category, goal, priorities and final detail are collected for the current session.
+The UI includes Refresh / restart and Start another session. A reload discards
+unfinished answers; completed signed-in requests remain in `match_requests`.
+Anonymous requests remain unsaved until sign-in and retry.
+
+`match_requests` holds immutable canonical profiles with owner-scoped UUIDs.
+Migration 008 backfills the previous account profile once and is replayable.
+`onboarding_profiles` remains the latest-profile projection for older consumers;
+voice-consent fields remain account-level. Save retries reuse the same request ID;
+a retry with different content fails instead of silently editing history. Extraction
+previews do not save; only the client-accepted completed answer is committed.
+
+Tournament creation requires the current request ID, at most three historical
+request IDs and explicit summary approval after the owner reviews the displayed
+values. All selections are loaded by authenticated owner, never taken as profile
+JSON from a client. `tournaments.match_request_id` binds the current request;
+`tournaments.match_context` snapshots `{ current: PublicSummary, history:
+PublicSummary[] }`. Only goal, interests and the first preference (the interview's
+final detail) are displayed and approved. Identity, other preferences and
+orchestrator dealbreakers are excluded. History defaults to unselected. The
+one-active-tournament rule remains; resuming an existing tournament preserves its
+original context even after completing a new interview.
+
+`buildSessionPitchContext(current, history)` validates summaries again and makes
+current intent authoritative over historical requests. The orchestrator owns
+injection into its pitch/decision generation. Never serialize `match_context` or
+private history into the public events feed. Deploy migration 008 before this app
+version; old tournaments have null request/context and need the legacy start gate.
+
+Run the app suite with `MATCH_REQUEST_TEST_DATABASE_URL` pointing to a disposable
+Postgres instance to include the migration/ownership/idempotency integration test.
+It creates and drops an isolated schema; never use production credentials for it.

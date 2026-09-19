@@ -119,3 +119,39 @@ test("article-led stalls are control; 'a moment, please' matches (Opus correctio
   r = await (await onboard({ answers: base, field: "lookingFor", message: "a place where I can stop and think" })).json();
   assert.equal(r.answers.lookingFor, "a place where I can stop and think");
 });
+
+test("a fresh session asks category first and never restores past intent", async () => {
+  const result = await (await onboard({ answers: { displayName: "David" }, field: null, message: "" })).json();
+  assert.equal(result.nextField, "seeking");
+  assert.deepEqual(result.answers, { displayName: "David" });
+  assert.deepEqual(result.suggestions, ["People", "Products", "Places"]);
+});
+
+test("the three categories ask relevant goal, priorities and final-detail questions", async () => {
+  for (const [category, goal, priority, detail] of [
+    ["people", /person.*meet/, /interests or values/i, /person know/],
+    ["products", /product.*help/, /features/, /budget or must-have/],
+    ["places", /place.*occasion/, /atmosphere/, /budget, timing/],
+  ] as const) {
+    const answers = { displayName: "David", seeking: category };
+    let result = await (await onboard({ answers, field: null, message: "" })).json();
+    assert.match(result.reply, goal);
+    result = await (await onboard({ answers: { ...answers, lookingFor: "Something specific" }, field: null, message: "" })).json();
+    assert.match(result.reply, priority);
+    result = await (await onboard({ answers: { ...answers, lookingFor: "Something specific", interests: ["quiet"] }, field: null, message: "" })).json();
+    assert.match(result.reply, detail);
+  }
+});
+
+test("request IDs reject malformed input before saving", async () => {
+  assert.equal((await onboard({ requestId: "not-an-id", answers: {}, field: null, message: "" })).status, 400);
+});
+
+
+test("completed extraction previews do not write a history record", async () => {
+  const answers = { displayName: "David", seeking: "products", lookingFor: "A bicycle", interests: ["durable"], funFact: "Under 600 dollars" };
+  const result = await (await onboard({ answers, field: null, message: "", requestId: "11111111-1111-1111-1111-111111111111", save: false })).json();
+  assert.equal(result.done, true);
+  assert.equal(result.saved, undefined);
+  assert.equal(result.requestId, "11111111-1111-1111-1111-111111111111");
+});

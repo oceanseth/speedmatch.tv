@@ -3,9 +3,9 @@ import type { Category } from "./types";
 
 /**
  * Typed profile extracted from the onboarding conversation. This is the
- * contract for onboarding_profiles.profile (see migrations/001_init.sql):
- * pitching agents receive a template rendered from these fields — never
- * the raw transcript.
+ * interview UI projection of the canonical match_requests.profile.
+ * Pitching agents receive only explicitly reviewed summaries, never a
+ * raw transcript or an automatically shared history.
  */
 export interface OnboardingProfile {
   displayName: string;
@@ -18,6 +18,9 @@ export interface OnboardingProfile {
 export type OnboardField = keyof OnboardingProfile;
 
 export interface OnboardRequest {
+  requestId?: string;
+  /** Extraction previews must not persist superseded voice fragments. */
+  save?: boolean;
   answers: Partial<OnboardingProfile>;
   /** The user's latest utterance, answering `field`. */
   field: OnboardField | null;
@@ -25,6 +28,7 @@ export interface OnboardRequest {
 }
 
 export interface OnboardResponse {
+  requestId?: string;
   reply: string;
   /** Which profile field the host is asking for next; null when done. */
   nextField: OnboardField | null;

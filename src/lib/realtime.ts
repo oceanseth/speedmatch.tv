@@ -21,6 +21,9 @@ const SAMPLE_RATE = 24_000;
 const MIC_FRAME_SAMPLES = 2_400;
 /** Re-mint + reconnect budget for close code 3000 (expired/invalid key). */
 const MAX_RECONNECT_ATTEMPTS = 3;
+const CUE_RECOVERY_MS = 5_000;
+const MAX_CUE_RECOVERIES = 2;
+const MAX_COMPLETED_USER_ITEMS = 256;
 
 export type RealtimeStatus =
   | "connecting"
@@ -43,6 +46,7 @@ export interface RealtimeCallbacks {
   onCaption?: (delta: string, done: boolean) => void;
   /** Transcript of what the user said (higgs-stt-3.1 input transcription). */
   onUserCaption?: (delta: string, done: boolean, itemId?: string) => void;
+  onUserSpeechStart?: (itemId?: string) => void;
   onError?: (message: string) => void;
 }
 
@@ -107,6 +111,11 @@ export class RealtimeVoiceSession {
   private requestedTurn = 0;
   private allowedResponse: string | null = null;
   private completedUserItems = new Set<string>();
+  private cuePending = false;
+  private userSpeaking = false;
+  private speechItem: string | null = null;
+  private cueRecoveries = 0;
+  private cueTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private cb: RealtimeCallbacks = {}) {}
 
@@ -255,6 +264,9 @@ export class RealtimeVoiceSession {
       this.reconnectAttempts = 0;
     }
     this.connectedAt = null;
+    this.clearCueTimer();
+    this.userSpeaking = false;
+    this.speechItem = null;
     this.flushPlayback();
     this.micBuffer = new Float32Array(0);
     if (event.code === 3000 && this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -282,6 +294,8 @@ export class RealtimeVoiceSession {
         output_modalities: ["audio"],
         audio: {
           input: {
+            // Keep VAD for barge-in; its automatic generations are deliberately
+            // cancelled in controlled mode (with some unavoidable token cost).
             turn_detection: { type: "server_vad" },
             transcription: { model: "higgs-stt-3.1" },
           },
@@ -298,6 +312,15 @@ export class RealtimeVoiceSession {
   speak(instructions: string) {
     if (this.closed) return;
     this.options.instructions = instructions;
+    this.cuePending = true;
+    this.cueRecoveries = 0;
+    this.clearCueTimer();
+    if (!this.userSpeaking) this.requestCue();
+  }
+
+  private requestCue() {
+    const instructions = this.options.instructions;
+    if (!instructions || this.closed || this.ws?.readyState !== WebSocket.OPEN) return;
     this.allowedResponse = null;
     this.flushPlayback();
     this.cb.onCaption?.("", true);
@@ -306,6 +329,28 @@ export class RealtimeVoiceSession {
       type: "response.create",
       response: { instructions, metadata: { app_turn: String(++this.requestedTurn) } },
     });
+    this.armCueRecovery();
+  }
+
+  private clearCueTimer() {
+    if (this.cueTimer !== null) clearTimeout(this.cueTimer);
+    this.cueTimer = null;
+  }
+
+  private armCueRecovery() {
+    this.clearCueTimer();
+    if (!this.options.controlledResponses || !this.cuePending || this.userSpeaking || this.closed) return;
+    this.cueTimer = setTimeout(() => {
+      this.cueTimer = null;
+      if (this.closed || !this.cuePending || this.userSpeaking || this.ws?.readyState !== WebSocket.OPEN) return;
+      if (this.cueRecoveries >= MAX_CUE_RECOVERIES) {
+        this.cb.onError?.("Voice did not resume. Please restart the microphone.");
+        this.close();
+        return;
+      }
+      this.cueRecoveries++;
+      this.requestCue();
+    }, CUE_RECOVERY_MS);
   }
 
   private pushMic(chunk: Float32Array) {
@@ -350,6 +395,7 @@ export class RealtimeVoiceSession {
         if (this.options.controlledResponses) {
           if (evt.response?.metadata?.app_turn === String(this.requestedTurn) && evt.response.id) {
             this.allowedResponse = evt.response.id;
+            this.clearCueTimer();
           } else if (evt.response?.id) {
             // VAD can reply before transcription/extraction finishes. It must
             // never speak an old question or start a free-form interview.
@@ -361,12 +407,24 @@ export class RealtimeVoiceSession {
         // Barge-in: the user started talking; drop queued agent audio.
         this.flushPlayback();
         if (this.options.controlledResponses) {
+          this.userSpeaking = true;
+          this.speechItem = evt.item_id ?? null;
+          this.clearCueTimer();
           this.allowedResponse = null;
           // Invalidate a requested response whose created event is still in flight.
           this.requestedTurn++;
         }
         this.cb.onCaption?.("", true);
         this.cb.onStatus?.("listening");
+        this.cb.onUserSpeechStart?.(evt.item_id);
+        break;
+      case "input_audio_buffer.speech_stopped":
+        // A cough can cancel the question without producing a transcript.
+        // Wait for VAD silence before timing recovery: real answers may be long.
+        if (!this.speechItem || !evt.item_id || this.speechItem === evt.item_id) {
+          this.userSpeaking = false;
+          this.armCueRecovery();
+        }
         break;
       // Both current and legacy OpenAI-Realtime event names, so a Boson
       // API-version bump doesn't silently mute the stage.
@@ -390,7 +448,22 @@ export class RealtimeVoiceSession {
         break;
       case "conversation.item.input_audio_transcription.completed":
         if (evt.item_id && this.completedUserItems.has(evt.item_id)) break;
-        if (evt.item_id) this.completedUserItems.add(evt.item_id);
+        if (evt.item_id) {
+          this.completedUserItems.add(evt.item_id);
+          if (this.completedUserItems.size > MAX_COMPLETED_USER_ITEMS) {
+            this.completedUserItems.delete(this.completedUserItems.values().next().value!);
+          }
+        }
+        if (this.options.controlledResponses && evt.transcript?.trim()) {
+          if (!this.speechItem || !evt.item_id || this.speechItem === evt.item_id) this.userSpeaking = false;
+          this.cuePending = false;
+          this.clearCueTimer();
+          // A delayed transcript can race a recovery response. Extraction now
+          // owns the next cue, so invalidate that response before notifying it.
+          this.allowedResponse = null;
+          this.requestedTurn++;
+          this.flushPlayback();
+        }
         this.cb.onUserCaption?.(evt.transcript ?? "", true, evt.item_id);
         break;
       case "response.done":
@@ -448,6 +521,8 @@ export class RealtimeVoiceSession {
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.clearCueTimer();
+    this.completedUserItems.clear();
     this.abort.abort();
     this.cancelOpen?.();
     this.micBuffer = new Float32Array(0);

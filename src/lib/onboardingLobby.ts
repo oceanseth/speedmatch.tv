@@ -8,12 +8,12 @@ export type LobbyResult =
 export const TOURNAMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Called only by the explicit public-lobby CTA. Ownership stays server-side. */
-export async function enterPublicLobby(category: Category): Promise<LobbyResult> {
+export async function enterPublicLobby(category: Category, selection?: { requestId: string; historyIds: string[]; approveSummary: true }): Promise<LobbyResult> {
   try {
     const response = await fetch("/api/tournaments", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category, isPublic: true }),
+      body: JSON.stringify({ category, isPublic: true, ...selection }),
       signal: AbortSignal.timeout(15_000),
     });
     if (response.status === 401) return { status: "signin" };

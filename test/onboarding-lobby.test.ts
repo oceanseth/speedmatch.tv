@@ -29,3 +29,13 @@ test("anonymous, unavailable and invalid create responses stay on the completed 
   assert.deepEqual(await enterPublicLobby("people"), { status: "signin" });
   for (let i = 0; i < 3; i++) assert.deepEqual(await enterPublicLobby("people"), { status: "failed" });
 });
+
+
+test("lobby creation carries reviewed request and selected history without profile values", async t => {
+  const selection = { requestId: id, historyIds: ["11111111-1111-1111-1111-111111111111"], approveSummary: true as const };
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    assert.deepEqual(JSON.parse(init.body as string), { category: "products", isPublic: true, ...selection });
+    return Response.json({ id }, { status: 201 });
+  });
+  assert.equal((await enterPublicLobby("products", selection)).status, "ready");
+});
