@@ -36,12 +36,18 @@ export async function POST(
       { status: 409 },
     );
   }
-  const hasProfile = await query(
-    `SELECT 1 FROM onboarding_profiles WHERE user_id = $1`,
-    [user.id],
-  );
-  if (hasProfile.length === 0) {
-    return NextResponse.json({ error: "no_profile" }, { status: 409 });
+  // New tournaments carry the reviewed per-session snapshot bound at
+  // creation (migration 008); the show runs from that, not from whatever
+  // the account defaults say by the time Start is pressed. Tournaments
+  // created before the snapshot existed keep the old account-level gate.
+  if (row.matchContext === null) {
+    const hasProfile = await query(
+      `SELECT 1 FROM onboarding_profiles WHERE user_id = $1`,
+      [user.id],
+    );
+    if (hasProfile.length === 0) {
+      return NextResponse.json({ error: "no_profile" }, { status: 409 });
+    }
   }
 
   try {
