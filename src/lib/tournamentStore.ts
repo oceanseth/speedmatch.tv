@@ -24,6 +24,9 @@ export interface TournamentRow {
   state: TournamentState;
   version: number;
   isPublic: boolean;
+  /** Server-owned reviewed snapshot (migration 008). Private: never include
+   * it in event/state payloads; null on tournaments created before it. */
+  matchContext: unknown;
 }
 
 interface DbRow {
@@ -33,6 +36,7 @@ interface DbRow {
   state: TournamentState;
   version: number;
   is_public: boolean;
+  match_context: unknown;
 }
 
 const toRow = (r: DbRow): TournamentRow => ({
@@ -42,11 +46,12 @@ const toRow = (r: DbRow): TournamentRow => ({
   state: r.state,
   version: r.version,
   isPublic: r.is_public,
+  matchContext: r.match_context ?? null,
 });
 
 export async function loadTournament(id: string): Promise<TournamentRow | null> {
   const rows = await query<DbRow>(
-    `SELECT id, user_id, category, state, version, is_public
+    `SELECT id, user_id, category, state, version, is_public, match_context
      FROM tournaments WHERE id = $1`,
     [id],
   );
