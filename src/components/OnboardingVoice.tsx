@@ -49,7 +49,7 @@ export default function OnboardingVoice({ onTurn, onActive, onAnswer, cue }: Pro
     const run = ++generation.current;
     setActive(true); setStatus("connecting"); setError(""); callbacks.current.onActive(true);
     let hostId = ""; let hostText = "";
-    let spokenCue = callbacks.current.cue;
+    let spokenCue: OnboardingCue | null = callbacks.current.cue;
     const speechQuestions = new Map<string, string | undefined>();
     let latestSpeechQuestion: string | undefined;
     try {
